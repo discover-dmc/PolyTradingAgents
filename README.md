@@ -105,8 +105,11 @@ uv run polyagents
 
 The wizard walks you through everything:
 
-1. **Condition ID** — paste the Polymarket condition ID (e.g. `0xabc123…`) — open any market on polymarket.com, click **Share → Copy link**, the `tid=` query param is the condition ID
-2. **Market details** — question and current YES probability are auto-fetched; confirm or edit
+1. **Market selection** — three options:
+   - **Browse top liquid markets** — fetches the most active markets from Polymarket and shows them in a list, filtered by liquidity thresholds so you only see tradeable markets
+   - **Search by keyword** — type a topic (e.g. "Trump", "Fed rate", "Bitcoin") and pick from results
+   - **Enter condition ID** — paste a known `0x…` ID directly (power user path)
+2. **Confirm details** — question and current YES probability are pre-filled from the Polymarket order book; edit if needed
 3. **Analysis date** — defaults to today
 4. **Analysts** — pick any combination of News, Base Rate, Crowd Forecast, Data
 5. **Research depth** — Shallow (1 round) / Medium (3) / Deep (5)

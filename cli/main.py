@@ -30,7 +30,7 @@ from polyagents.graph.trading_graph import PolyAgentsGraph
 from polyagents.default_config import DEFAULT_CONFIG
 from cli.models import AnalystType
 from cli.utils import (
-    get_condition_id,
+    pick_market,
     fetch_market_info,
     get_market_question,
     get_current_probability,
@@ -580,37 +580,32 @@ def get_user_selections() -> dict:
             body += f"\n[dim italic]{hint}[/dim italic]"
         console.print(Panel(body, border_style="blue", padding=(1, 2)))
 
-    # --- Step 1: Condition ID ---
-    box("Step 1: Condition ID",
-        "Enter the Polymarket condition ID (0x…)",
-        "Find it in the market URL or via the Polymarket API")
-    condition_id = get_condition_id()
+    # --- Step 1: Find a market ---
+    box("Step 1: Market Selection",
+        "Browse top liquid markets, search by keyword, or paste a condition ID",
+        "Market details are fetched automatically from Polymarket")
+    condition_id, info = pick_market()
 
-    # --- Auto-fetch market info ---
-    console.print("[dim]Fetching market info from Polymarket…[/dim]")
-    info = fetch_market_info(condition_id)
-    if info:
+    if info.get("question"):
         console.print(Panel(
-            f"[green]✓ Found market[/green]\n\n"
+            f"[green]✓ Market loaded[/green]\n\n"
             f"[bold]Question:[/bold] {info['question']}\n"
-            f"[bold]YES price:[/bold] {info['current_probability']:.1%}   "
+            f"[bold]YES price:[/bold] {float(info.get('current_probability', 0.5)):.1%}   "
             f"[bold]Resolves:[/bold] {info.get('end_date', 'unknown')}   "
             f"[bold]Liquid:[/bold] {'✓' if info.get('liquid') else '✗'}",
             border_style="green", padding=(1, 2),
         ))
-    else:
-        console.print("[yellow]Could not auto-fetch — enter details manually.[/yellow]")
 
-    # --- Step 2: Market question ---
-    box("Step 2: Market Question", "The full resolution question for this market")
-    market_question = get_market_question(prefill=info["question"] if info else "")
+    # --- Step 2: Confirm / edit market question ---
+    box("Step 2: Market Question", "Confirm or edit the resolution question")
+    market_question = get_market_question(prefill=info.get("question", ""))
 
-    # --- Step 3: Current probability ---
+    # --- Step 3: Confirm / edit current probability ---
     box("Step 3: Current YES Probability",
-        "Current mid-price for YES shares (0.01–0.99)",
-        "Pre-filled from Polymarket if available")
+        "Confirm or edit the current mid-price for YES shares (0.01-0.99)",
+        "Pre-filled from Polymarket order book")
     current_probability = get_current_probability(
-        prefill=info["current_probability"] if info else 0.5
+        prefill=float(info.get("current_probability", 0.5))
     )
 
     # --- Step 4: Analysis date ---

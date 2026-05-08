@@ -1,6 +1,6 @@
 """CLI input helpers for PolyAgents — Polymarket-specific prompts."""
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple  # noqa: F401 – Tuple used in new market-picker helpers
 
 import questionary
 from rich.console import Console
@@ -40,13 +40,136 @@ _SELECT_STYLE = questionary.Style([
 # Polymarket-specific inputs
 # ---------------------------------------------------------------------------
 
-def get_condition_id() -> str:
-    """Prompt for a Polymarket condition ID (hex string)."""
+def pick_market() -> Tuple[str, dict]:
+    """Top-level market selection — returns (condition_id, market_info_dict).
+
+    Offers three paths:
+      1. Browse top liquid markets fetched from Polymarket
+      2. Search by keyword
+      3. Enter a condition ID manually
+    """
+    MODE_OPTIONS = [
+        ("Browse top liquid markets  — scan Polymarket for tradeable markets", "browse"),
+        ("Search by keyword          — find markets by topic", "search"),
+        ("Enter condition ID         — paste a known 0x... ID directly", "manual"),
+    ]
+    mode = questionary.select(
+        "How do you want to find a market?",
+        choices=[questionary.Choice(d, value=v) for d, v in MODE_OPTIONS],
+        instruction="\n  Arrow keys  |  Enter to select",
+        style=_SELECT_STYLE,
+    ).ask()
+
+    if mode is None:
+        console.print("\n[red]No mode selected. Exiting...[/red]")
+        raise SystemExit(1)
+
+    if mode == "browse":
+        return _browse_markets()
+    if mode == "search":
+        return _search_markets()
+    return _manual_condition_id()
+
+
+def _browse_markets() -> Tuple[str, dict]:
+    """Fetch and display top liquid markets; user picks one."""
+    from polyagents.dataflows.polymarket import get_active_markets
+
+    console.print("\n[cyan]Fetching top liquid markets from Polymarket...[/cyan]")
+    try:
+        markets = get_active_markets(limit=50, min_volume=500.0, min_liquidity=200.0)
+    except Exception as e:
+        console.print(f"[yellow]Could not fetch markets: {e}[/yellow]")
+        return _manual_condition_id()
+
+    if not markets:
+        console.print("[yellow]No liquid markets found. Try entering a condition ID manually.[/yellow]")
+        return _manual_condition_id()
+
+    return _pick_from_market_list(markets[:30])
+
+
+def _search_markets() -> Tuple[str, dict]:
+    """Keyword search → pick from results."""
+    from polyagents.dataflows.polymarket import search_markets
+
+    query = questionary.text(
+        "Search Polymarket markets:",
+        validate=lambda x: len(x.strip()) >= 2 or "Enter at least 2 characters.",
+        style=_QSTYLE,
+    ).ask()
+
+    if not query:
+        raise SystemExit(1)
+
+    console.print(f"\n[cyan]Searching for '{query}'...[/cyan]")
+    try:
+        markets = search_markets(query.strip(), limit=30)
+    except Exception as e:
+        console.print(f"[yellow]Search failed: {e}[/yellow]")
+        return _manual_condition_id()
+
+    if not markets:
+        console.print(f"[yellow]No markets found for '{query}'. Try a different term or enter an ID manually.[/yellow]")
+        return _manual_condition_id()
+
+    return _pick_from_market_list(markets)
+
+
+def _pick_from_market_list(markets: list) -> Tuple[str, dict]:
+    """Display a market list as a questionary select; return (condition_id, info)."""
+    def _fmt(m: dict) -> str:
+        q = (m.get("question") or m.get("title") or "Unknown")[:70]
+        vol = float(m.get("volume", 0) or 0)
+        liq = float(m.get("liquidity", 0) or 0)
+        return f"{q:<72}  vol ${vol:>8,.0f}  liq ${liq:>8,.0f}"
+
+    choices = [
+        questionary.Choice(_fmt(m), value=m)
+        for m in markets
+        if m.get("conditionId") or m.get("condition_id")
+    ]
+
+    if not choices:
+        console.print("[yellow]No markets with valid condition IDs. Falling back to manual entry.[/yellow]")
+        return _manual_condition_id()
+
+    choices.append(questionary.Choice("↩  Enter condition ID manually", value=None))
+
+    picked = questionary.select(
+        "Select a market:",
+        choices=choices,
+        instruction="\n  Arrow keys  |  Enter to select",
+        style=_SELECT_STYLE,
+    ).ask()
+
+    if picked is None:
+        return _manual_condition_id()
+
+    cid = (picked.get("conditionId") or picked.get("condition_id", "")).lower()
+    info = {
+        "question": picked.get("question") or picked.get("title") or "",
+        "current_probability": float(picked.get("outcomePrices", [0.5])[0])
+            if isinstance(picked.get("outcomePrices"), list)
+            else 0.5,
+        "end_date": picked.get("end_date_iso") or picked.get("endDate") or "",
+        "liquid": True,
+    }
+    # Try to get a live mid price from the liquidity summary
+    live = fetch_market_info(cid)
+    if live:
+        info.update(live)
+
+    return cid, info
+
+
+def _manual_condition_id() -> Tuple[str, dict]:
+    """Prompt for a raw condition ID, then fetch info."""
     cid = questionary.text(
         "Enter the Polymarket condition ID (0x...):",
         validate=lambda x: (
             bool(re.match(r"^0x[0-9a-fA-F]+$", x.strip()))
-            or "Must be a hex string starting with 0x — find it in the market URL or API."
+            or "Must be a hex string starting with 0x — find it in the market URL."
         ),
         style=_QSTYLE,
     ).ask()
@@ -55,7 +178,9 @@ def get_condition_id() -> str:
         console.print("\n[red]No condition ID provided. Exiting...[/red]")
         raise SystemExit(1)
 
-    return cid.strip().lower()
+    cid = cid.strip().lower()
+    info = fetch_market_info(cid) or {}
+    return cid, info
 
 
 def fetch_market_info(condition_id: str) -> Optional[dict]:
