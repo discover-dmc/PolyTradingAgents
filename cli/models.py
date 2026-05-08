@@ -1,10 +1,8 @@
 from enum import Enum
-from typing import List, Optional, Dict
-from pydantic import BaseModel
 
 
 class AnalystType(str, Enum):
-    MARKET = "market"
-    SOCIAL = "social"
     NEWS = "news"
-    FUNDAMENTALS = "fundamentals"
+    BASE_RATE = "base_rate"
+    CROWD_FORECAST = "crowd_forecast"
+    DATA = "data"
