@@ -1,4 +1,6 @@
-# PolyTradingAgents
+<p align="center">
+  <img src="assets/logo.png" alt="PolyAgents" style="width: 60%; height: auto;">
+</p>
 
 **Multi-agent LLM framework for Polymarket prediction market trading**
 
