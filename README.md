@@ -71,6 +71,52 @@ class PositionDecision(BaseModel):
 
 ---
 
+## CLI
+
+The fastest way to run PolyAgents is the interactive terminal UI.
+
+### 1. Install
+
+```bash
+git clone https://github.com/discover-dmc/PolyAgents.git
+cd PolyAgents
+uv sync
+```
+
+### 2. Add API keys
+
+```bash
+cp .env.example .env   # then fill in your keys
+```
+
+At minimum you need one LLM provider key:
+
+```env
+OPENAI_API_KEY=sk-...        # OpenAI
+ANTHROPIC_API_KEY=sk-ant-... # Anthropic / Claude
+GOOGLE_API_KEY=...           # Gemini
+```
+
+### 3. Launch
+
+```bash
+uv run polyagents
+```
+
+The wizard walks you through everything:
+
+1. **Condition ID** — paste the Polymarket condition ID (e.g. `0xabc123…`) — open any market on polymarket.com, click **Share → Copy link**, the `tid=` query param is the condition ID
+2. **Market details** — question and current YES probability are auto-fetched; confirm or edit
+3. **Analysis date** — defaults to today
+4. **Analysts** — pick any combination of News, Base Rate, Crowd Forecast, Data
+5. **Research depth** — Shallow (1 round) / Medium (3) / Deep (5)
+6. **LLM provider & models** — choose from OpenAI, Anthropic, Google, xAI, DeepSeek, OpenRouter, Ollama, …
+7. **Output language** — English, Chinese, Japanese, Spanish, … or custom
+
+A live dashboard streams results as each analyst completes, then shows the final YES / NO / SKIP decision with Kelly fraction.
+
+---
+
 ## Quickstart
 
 ```python
