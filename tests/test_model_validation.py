@@ -3,9 +3,9 @@ import warnings
 
 import pytest
 
-from tradingagents.llm_clients.base_client import BaseLLMClient
-from tradingagents.llm_clients.model_catalog import get_known_models
-from tradingagents.llm_clients.validators import validate_model
+from polytradingagents.llm_clients.base_client import BaseLLMClient
+from polytradingagents.llm_clients.model_catalog import get_known_models
+from polytradingagents.llm_clients.validators import validate_model
 
 
 class DummyLLMClient(BaseLLMClient):

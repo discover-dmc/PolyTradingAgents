@@ -1,98 +1,99 @@
 """Integration smoke test: exercises the full compile+propagate path.
 
-Uses mock LLMs so no API calls are made.  The test verifies that:
-
-- The graph compiles without errors (node wiring is correct).
-- ``propagate()`` returns a ``(final_state, signal)`` tuple.
-- ``final_state`` contains all expected top-level keys.
-- The signal is one of the five canonical rating strings.
-- The memory log receives a pending entry after the run.
-
-This catches graph wiring regressions (mismatched node names, missing state
-fields, broken fan-out/fan-in edges) that unit tests on isolated components
-cannot detect.
+Uses mock LLMs and a patched TradeSniper so no API calls are made.  Verifies:
+- Graph compiles (node wiring correct)
+- propagate() returns (final_state dict, signal str)
+- signal is one of YES / NO / SKIP
+- analyst_reports has an entry per selected analyst
+- memory log receives a pending entry
 """
-
 from __future__ import annotations
 
-import functools
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tradingagents.agents.schemas import (
-    PortfolioDecision,
-    PortfolioRating,
+from polytradingagents.agents.schemas import (
+    PositionDecision,
     ResearchPlan,
+    PortfolioRating,
     TraderAction,
     TraderProposal,
 )
-from tradingagents.agents.utils.memory import TradingMemoryLog
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.graph.propagation import Propagator
-from tradingagents.graph.trading_graph import PolyTradingAgentsGraph
+from polytradingagents.default_config import DEFAULT_CONFIG
+from polytradingagents.graph.trading_graph import PolyTradingAgentsGraph
 
 
 # ---------------------------------------------------------------------------
-# Mock LLM — no API calls
+# Mock LLM — zero API calls
 # ---------------------------------------------------------------------------
 
 class _MockLLM:
-    """Minimal LLM stub that handles every calling pattern in the graph.
-
-    - ``bind_tools()``: returns a stub whose ``invoke()`` returns an AIMessage
-      with no tool_calls so the analyst tool-loop exits immediately.
-    - ``invoke()``: returns a stub message for researcher/debater nodes.
-    - ``with_structured_output(schema)``: returns a stub that returns a valid
-      Pydantic instance for each of the three decision-making schemas.
-    """
+    """Handles every calling pattern in the graph without hitting any API."""
 
     def bind_tools(self, tools):
         from langchain_core.messages import AIMessage
         stub = MagicMock()
-        stub.invoke.return_value = AIMessage(
-            content="Mock analyst report — no real data.", tool_calls=[]
-        )
+        stub.invoke.return_value = AIMessage(content="Mock analyst report.", tool_calls=[])
         return stub
 
     def invoke(self, prompt):
         from langchain_core.messages import AIMessage
-        return AIMessage(content="Bull Analyst: mock debate argument.")
+        return AIMessage(content="Yes Analyst: mock debate argument.")
 
     def with_structured_output(self, schema, **kwargs):
         stub = MagicMock()
         name = getattr(schema, "__name__", "")
-
         if name == "ResearchPlan":
             stub.invoke.return_value = ResearchPlan(
                 recommendation=PortfolioRating.HOLD,
-                rationale="Balanced mock arguments from both sides.",
-                strategic_actions="Maintain current position; revisit next quarter.",
+                rationale="Balanced evidence on both sides.",
+                strategic_actions="No position; revisit when edge exceeds 5%.",
             )
         elif name == "TraderProposal":
             stub.invoke.return_value = TraderProposal(
                 action=TraderAction.HOLD,
-                reasoning="Waiting for a clearer directional signal.",
+                reasoning="Insufficient edge to size a position.",
             )
-        elif name == "PortfolioDecision":
-            stub.invoke.return_value = PortfolioDecision(
-                rating=PortfolioRating.HOLD,
-                executive_summary="Hold the position; no catalyst to act.",
-                investment_thesis="Evidence is balanced; neither bull nor bear side dominated.",
+        elif name == "PositionDecision":
+            stub.invoke.return_value = PositionDecision(
+                direction="YES",
+                estimated_probability=0.65,
+                market_probability=0.50,
+                edge=0.15,
+                kelly_fraction=0.10,
+                confidence="Medium",
+                reasoning="Mock: market underprices YES given evidence.",
             )
         else:
-            # Unknown schema — return a generic mock (fail loudly if accessed).
             stub.invoke.side_effect = ValueError(f"Unexpected schema: {name}")
         return stub
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Liquidity pass-through patch — makes TradeSniper always approve
+# ---------------------------------------------------------------------------
+
+_LIQUID_SUMMARY = {
+    "condition_id": "mock-condition-id",
+    "question": "Will X happen by Y?",
+    "volume_24h": 5000.0,
+    "liquidity": 2000.0,
+    "yes_mid_price": 0.50,
+    "yes_spread": 0.02,
+    "yes_depth_usd": 500.0,
+    "end_date": "2026-12-31",
+    "active": True,
+    "liquid": True,
+}
+
+
+# ---------------------------------------------------------------------------
+# Fixture
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def mock_graph(tmp_path):
-    """Real PolyTradingAgentsGraph with mock LLMs injected via patch."""
     config = {
         **DEFAULT_CONFIG,
         "results_dir": str(tmp_path / "results"),
@@ -100,18 +101,28 @@ def mock_graph(tmp_path):
         "memory_log_path": str(tmp_path / "mem.md"),
         "checkpoint_enabled": False,
     }
-
     llm = _MockLLM()
     mock_client = MagicMock()
     mock_client.get_llm.return_value = llm
 
-    with patch(
-        "tradingagents.graph.trading_graph.create_llm_client",
-        return_value=mock_client,
-    ):
-        graph = PolyTradingAgentsGraph(selected_analysts=["market", "news"], config=config)
-
+    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
+        graph = PolyTradingAgentsGraph(selected_analysts=["news", "data"], config=config)
     return graph
+
+
+def _propagate(graph, condition_id="mock-cid-001", trade_date="2026-01-10"):
+    """Run propagate() with TradeSniper and resolution patched out."""
+    graph._fetch_resolution = MagicMock(return_value=None)
+    with patch(
+        "polytradingagents.agents.analysts.trade_sniper.get_liquidity_summary",
+        return_value=_LIQUID_SUMMARY,
+    ):
+        return graph.propagate(
+            condition_id=condition_id,
+            trade_date=trade_date,
+            market_question="Will X happen by Y?",
+            current_probability=0.50,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -120,76 +131,50 @@ def mock_graph(tmp_path):
 
 @pytest.mark.smoke
 def test_graph_compiles(mock_graph):
-    """The graph object is created and the compiled workflow is not None."""
     assert mock_graph.graph is not None
     assert mock_graph.workflow is not None
 
 
 @pytest.mark.smoke
-def test_propagate_returns_tuple(mock_graph, tmp_path):
-    """propagate() returns a (dict, str) tuple without raising."""
-    # Patch _fetch_returns so no yfinance calls are made for pending entries.
-    mock_graph._fetch_returns = MagicMock(return_value=(None, None, None))
-
-    final_state, signal = mock_graph.propagate("NVDA", "2026-01-10")
-
-    assert isinstance(final_state, dict), "final_state should be a dict"
-    assert isinstance(signal, str), "signal should be a string"
+def test_propagate_returns_tuple(mock_graph):
+    final_state, signal = _propagate(mock_graph)
+    assert isinstance(final_state, dict)
+    assert isinstance(signal, str)
 
 
 @pytest.mark.smoke
-def test_propagate_signal_is_valid_rating(mock_graph):
-    """The signal extracted from the PM decision is one of the five canonical values."""
-    mock_graph._fetch_returns = MagicMock(return_value=(None, None, None))
-    _final_state, signal = mock_graph.propagate("NVDA", "2026-01-10")
-    assert signal in ("Buy", "Overweight", "Hold", "Underweight", "Sell")
+def test_propagate_signal_is_valid(mock_graph):
+    _, signal = _propagate(mock_graph)
+    assert signal in ("YES", "NO", "SKIP"), f"unexpected signal: {signal!r}"
 
 
 @pytest.mark.smoke
 def test_propagate_final_state_has_required_keys(mock_graph):
-    """final_state carries the keys that downstream consumers depend on."""
-    mock_graph._fetch_returns = MagicMock(return_value=(None, None, None))
-    final_state, _signal = mock_graph.propagate("NVDA", "2026-01-10")
-
-    required = {
-        "final_trade_decision",
-        "investment_plan",
-        "trader_investment_plan",
-        "analyst_reports",
-        "company_of_interest",
-    }
+    final_state, _ = _propagate(mock_graph)
+    required = {"final_trade_decision", "investment_plan", "analyst_reports", "condition_id"}
     missing = required - set(final_state.keys())
     assert not missing, f"final_state missing keys: {missing}"
 
 
 @pytest.mark.smoke
-def test_propagate_writes_memory_log_entry(mock_graph, tmp_path):
-    """A pending log entry is created in the memory log after propagate()."""
-    mock_graph._fetch_returns = MagicMock(return_value=(None, None, None))
-    mock_graph.propagate("NVDA", "2026-01-10")
+def test_propagate_analyst_reports_populated(mock_graph):
+    final_state, _ = _propagate(mock_graph)
+    reports = final_state.get("analyst_reports", {})
+    assert "news" in reports, "news analyst report missing"
+    assert "data" in reports, "data analyst report missing"
 
+
+@pytest.mark.smoke
+def test_propagate_writes_memory_log_entry(mock_graph):
+    _propagate(mock_graph)
     entries = mock_graph.memory_log.load_entries()
     assert len(entries) == 1
-    assert entries[0]["ticker"] == "NVDA"
-    assert entries[0]["date"] == "2026-01-10"
+    assert entries[0]["ticker"] == "mock-cid-001"
     assert entries[0]["pending"] is True
 
 
 @pytest.mark.smoke
-def test_propagate_analyst_reports_populated(mock_graph):
-    """analyst_reports dict has an entry for each selected analyst after the run."""
-    mock_graph._fetch_returns = MagicMock(return_value=(None, None, None))
-    final_state, _ = mock_graph.propagate("NVDA", "2026-01-10")
-
-    reports = final_state.get("analyst_reports", {})
-    # mock_graph was created with selected_analysts=["market", "news"]
-    assert "market" in reports, "market analyst report missing"
-    assert "news" in reports, "news analyst report missing"
-
-
-@pytest.mark.smoke
 def test_graph_wiring_all_analysts(tmp_path):
-    """Graph compiles and propagates with all four analysts selected."""
     config = {
         **DEFAULT_CONFIG,
         "results_dir": str(tmp_path / "results"),
@@ -197,40 +182,74 @@ def test_graph_wiring_all_analysts(tmp_path):
         "memory_log_path": str(tmp_path / "mem.md"),
         "checkpoint_enabled": False,
     }
-
     llm = _MockLLM()
     mock_client = MagicMock()
     mock_client.get_llm.return_value = llm
 
-    with patch(
-        "tradingagents.graph.trading_graph.create_llm_client",
-        return_value=mock_client,
-    ):
+    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
         graph = PolyTradingAgentsGraph(
-            selected_analysts=["market", "social", "news", "fundamentals"],
+            selected_analysts=["news", "base_rate", "crowd_forecast", "data"],
             config=config,
         )
 
-    graph._fetch_returns = MagicMock(return_value=(None, None, None))
-    final_state, signal = graph.propagate("AAPL", "2026-02-01")
+    graph._fetch_resolution = MagicMock(return_value=None)
+    with patch(
+        "polytradingagents.agents.analysts.trade_sniper.get_liquidity_summary",
+        return_value=_LIQUID_SUMMARY,
+    ):
+        final_state, signal = graph.propagate(
+            condition_id="mock-cid-all",
+            trade_date="2026-02-01",
+            market_question="Will Y happen?",
+            current_probability=0.45,
+        )
 
-    assert signal in ("Buy", "Overweight", "Hold", "Underweight", "Sell")
+    assert signal in ("YES", "NO", "SKIP")
     reports = final_state.get("analyst_reports", {})
-    for key in ("market", "social", "news", "fundamentals"):
-        assert key in reports, f"{key} analyst report missing from final_state"
+    for key in ("news", "base_rate", "crowd_forecast", "data"):
+        assert key in reports, f"{key} analyst report missing"
+
+
+@pytest.mark.smoke
+def test_trade_sniper_skip_path(tmp_path):
+    """When TradeSniper returns liquid=False the graph short-circuits to SKIP."""
+    config = {
+        **DEFAULT_CONFIG,
+        "results_dir": str(tmp_path / "results"),
+        "data_cache_dir": str(tmp_path / "cache"),
+        "memory_log_path": str(tmp_path / "mem.md"),
+        "checkpoint_enabled": False,
+    }
+    llm = _MockLLM()
+    mock_client = MagicMock()
+    mock_client.get_llm.return_value = llm
+
+    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
+        graph = PolyTradingAgentsGraph(selected_analysts=["news"], config=config)
+
+    graph._fetch_resolution = MagicMock(return_value=None)
+    illiquid = {**_LIQUID_SUMMARY, "liquid": False, "volume_24h": 10.0}
+    with patch(
+        "polytradingagents.agents.analysts.trade_sniper.get_liquidity_summary",
+        return_value=illiquid,
+    ):
+        final_state, signal = graph.propagate(
+            condition_id="thin-market",
+            trade_date="2026-02-01",
+            market_question="Will Z happen?",
+            current_probability=0.50,
+        )
+
+    assert signal == "SKIP", f"expected SKIP for illiquid market, got {signal!r}"
 
 
 @pytest.mark.smoke
 def test_invalid_analyst_key_raises():
-    """Unknown analyst type raises ValueError at graph construction time."""
     config = {**DEFAULT_CONFIG}
     llm = _MockLLM()
     mock_client = MagicMock()
     mock_client.get_llm.return_value = llm
 
-    with patch(
-        "tradingagents.graph.trading_graph.create_llm_client",
-        return_value=mock_client,
-    ):
+    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
         with pytest.raises(ValueError, match="Unknown analyst"):
             PolyTradingAgentsGraph(selected_analysts=["markt"], config=config)

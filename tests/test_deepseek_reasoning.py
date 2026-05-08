@@ -16,7 +16,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompt_values import ChatPromptValue
 
-from tradingagents.llm_clients.openai_client import (
+from polytradingagents.llm_clients.openai_client import (
     DeepSeekChatOpenAI,
     NormalizedChatOpenAI,
     _input_to_messages,

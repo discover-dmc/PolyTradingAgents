@@ -1,28 +1,20 @@
-# PolyTradingAgents/graph/trading_graph.py
+# polytradingagents/graph/trading_graph.py
 
 import logging
 import os
 from pathlib import Path
 import json
-from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional, Tuple, Set
-
-import yfinance as yf
+from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 from polytradingagents.llm_clients import create_llm_client
-
 from polytradingagents.agents import *
 from polytradingagents.agents.schemas import build_run_snapshot
 from polytradingagents.default_config import DEFAULT_CONFIG
 from polytradingagents.agents.utils.memory import TradingMemoryLog
 from polytradingagents.dataflows.utils import safe_ticker_component
-from polytradingagents.agents.utils.agent_states import (
-    AgentState,
-    InvestDebateState,
-    RiskDebateState,
-)
+from polytradingagents.agents.utils.agent_states import AgentState, InvestDebateState, RiskDebateState
 from polytradingagents.dataflows.config import set_config
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
@@ -31,12 +23,11 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
-
 from polytradingagents.dataflows.interface import clear_session_cache
 
 
 class PolyTradingAgentsGraph:
-    """Main class that orchestrates the trading agents framework."""
+    """Orchestrates the PolyTradingAgents framework for Polymarket prediction markets."""
 
     def __init__(
         self,
@@ -45,23 +36,14 @@ class PolyTradingAgentsGraph:
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
     ):
-        """Initialize the trading agents graph and components.
-
-        Args:
-            selected_analysts: Analyst types to include. Defaults to all four.
-            debug: Whether to run in debug mode (streams node output).
-            config: Configuration dictionary. If None, uses DEFAULT_CONFIG.
-            callbacks: Optional list of LangChain callback handlers.
-        """
         if selected_analysts is None:
-            selected_analysts = ["market", "social", "news", "fundamentals"]
+            selected_analysts = ["news", "base_rate", "crowd_forecast", "data"]
 
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
 
         set_config(self.config)
-
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
@@ -86,7 +68,6 @@ class PolyTradingAgentsGraph:
         self.quick_thinking_llm = quick_client.get_llm()
 
         self.memory_log = TradingMemoryLog(self.config)
-
         self.conditional_logic = ConditionalLogic(
             max_debate_rounds=self.config["max_debate_rounds"],
             max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],
@@ -96,166 +77,138 @@ class PolyTradingAgentsGraph:
             self.deep_thinking_llm,
             self.conditional_logic,
         )
-
         self.propagator = Propagator()
         self.reflector = Reflector(self.quick_thinking_llm)
         self.signal_processor = SignalProcessor(self.quick_thinking_llm)
 
         self.curr_state = None
-        self.ticker = None
+        self.condition_id: Optional[str] = None
         self.log_states_dict: Dict[str, Any] = {}
-        # In-session cache for _fetch_returns: keyed by (ticker, trade_date).
-        # Only successful (non-None) fetches are cached so transient failures
-        # are retried on the next call within the same session.
-        self._returns_cache: Dict[Tuple[str, str], Tuple[float, float, int]] = {}
+        # In-session cache for _fetch_resolution: keyed by condition_id.
+        self._resolution_cache: Dict[str, Optional[bool]] = {}
 
         self.workflow = self.graph_setup.setup_graph(selected_analysts)
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
 
     def _get_provider_kwargs(self) -> Dict[str, Any]:
-        """Get provider-specific kwargs for LLM client creation."""
         kwargs: Dict[str, Any] = {}
         provider = self.config.get("llm_provider", "").lower()
-
         if provider == "google":
-            thinking_level = self.config.get("google_thinking_level")
-            if thinking_level:
-                kwargs["thinking_level"] = thinking_level
-
+            v = self.config.get("google_thinking_level")
+            if v: kwargs["thinking_level"] = v
         elif provider == "openai":
-            reasoning_effort = self.config.get("openai_reasoning_effort")
-            if reasoning_effort:
-                kwargs["reasoning_effort"] = reasoning_effort
-
+            v = self.config.get("openai_reasoning_effort")
+            if v: kwargs["reasoning_effort"] = v
         elif provider == "anthropic":
-            effort = self.config.get("anthropic_effort")
-            if effort:
-                kwargs["effort"] = effort
-
+            v = self.config.get("anthropic_effort")
+            if v: kwargs["effort"] = v
         max_retries = self.config.get("llm_max_retries")
         if max_retries is not None:
             kwargs["max_retries"] = max_retries
-
         return kwargs
 
-    def _fetch_returns(
-        self, ticker: str, trade_date: str, holding_days: int = 5
-    ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
-        """Fetch raw and alpha return for ticker over holding_days from trade_date.
+    def _fetch_resolution(self, condition_id: str) -> Optional[bool]:
+        """Check if a market has resolved and return the outcome (True=YES, False=NO, None=unresolved).
 
-        Results are cached in-session by (ticker, trade_date) so that a busy
-        backtest loop resolving many pending entries for the same ticker/date
-        pair only hits the network once per session.
-
-        Returns (raw_return, alpha_return, actual_holding_days) or
-        (None, None, None) if price data is unavailable.
+        Results cached in-session; only successful (non-None) fetches are stored
+        so unresolved markets are re-checked on the next call.
         """
-        cache_key = (ticker, trade_date)
-        if cache_key in self._returns_cache:
-            return self._returns_cache[cache_key]
-
+        if condition_id in self._resolution_cache:
+            return self._resolution_cache[condition_id]
         try:
-            start = datetime.strptime(trade_date, "%Y-%m-%d")
-            end = start + timedelta(days=holding_days + 7)
-            end_str = end.strftime("%Y-%m-%d")
-
-            stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
-            spy = yf.Ticker("SPY").history(start=trade_date, end=end_str)
-
-            if len(stock) < 2 or len(spy) < 2:
-                return None, None, None
-
-            actual_days = min(holding_days, len(stock) - 1, len(spy) - 1)
-            raw = float(
-                (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
-                / stock["Close"].iloc[0]
-            )
-            spy_ret = float(
-                (spy["Close"].iloc[actual_days] - spy["Close"].iloc[0])
-                / spy["Close"].iloc[0]
-            )
-            alpha = raw - spy_ret
-            result = (raw, alpha, actual_days)
-            self._returns_cache[cache_key] = result  # only cache successful fetches
-            return result
+            from polytradingagents.dataflows.polymarket import get_market
+            market = get_market(condition_id)
+            if not market.get("closed", False):
+                return None  # still open — don't cache
+            tokens = market.get("tokens", [])
+            for token in tokens:
+                if token.get("winner", False):
+                    outcome = token.get("outcome", "").upper() == "YES"
+                    self._resolution_cache[condition_id] = outcome
+                    return outcome
+            return None
         except Exception as e:
-            logger.warning(
-                "Could not resolve outcome for %s on %s (will retry next run): %s",
-                ticker, trade_date, e,
-            )
-            return None, None, None
+            logger.warning("Could not fetch resolution for %s: %s", condition_id, e)
+            return None
 
     def _resolve_pending_entries(self) -> None:
-        """Resolve ALL pending log entries at the start of a new run.
-
-        Resolves across all tickers so that entries from previous tickers
-        don't silently accumulate forever — they just need any propagate()
-        call to trigger resolution once the holding period has elapsed.
-        """
+        """Resolve all pending memory log entries whose markets have now closed."""
         pending = self.memory_log.get_pending_entries()
         if not pending:
             return
 
         updates = []
         for entry in pending:
-            raw, alpha, days = self._fetch_returns(entry["ticker"], entry["date"])
-            if raw is None:
+            cid = entry.get("ticker")  # stored as ticker for compat
+            outcome = self._fetch_resolution(cid)
+            if outcome is None:
                 continue
+            # Map binary outcome to raw_return: +1.0 if correct, -1.0 if wrong
+            decision_text = entry.get("decision", "").upper()
+            predicted_yes = "YES" in decision_text and "NO" not in decision_text.split("YES")[0]
+            correct = (outcome == predicted_yes)
+            raw_return = 1.0 if correct else -1.0
             reflection = self.reflector.reflect_on_final_decision(
                 final_decision=entry.get("decision", ""),
-                raw_return=raw,
-                alpha_return=alpha,
+                raw_return=raw_return,
+                alpha_return=raw_return,  # no benchmark for binary markets
             )
             updates.append({
-                "ticker": entry["ticker"],
+                "ticker": cid,
                 "trade_date": entry["date"],
-                "raw_return": raw,
-                "alpha_return": alpha,
-                "holding_days": days,
+                "raw_return": raw_return,
+                "alpha_return": raw_return,
+                "holding_days": 0,
                 "reflection": reflection,
             })
 
         if updates:
             self.memory_log.batch_update_with_outcomes(updates)
 
-    def propagate(self, company_name: str, trade_date: str) -> Tuple[Dict[str, Any], str]:
-        """Run the trading agents graph for a company on a specific date.
+    def propagate(
+        self,
+        condition_id: str,
+        trade_date: str,
+        market_question: str = "",
+        resolution_criteria: str = "",
+        resolution_date: str = "",
+        current_probability: float = 0.5,
+    ) -> Tuple[Dict[str, Any], str]:
+        """Run the PolyTradingAgents graph for a Polymarket market.
 
         Args:
-            company_name: Ticker symbol or company name.
-            trade_date: ISO-format date string (YYYY-MM-DD).
+            condition_id: Polymarket condition ID.
+            trade_date: ISO date of this analysis run (YYYY-MM-DD).
+            market_question: Full resolution question text.
+            resolution_criteria: How the market resolves.
+            resolution_date: ISO date the market resolves.
+            current_probability: Current market mid price (0.0–1.0).
 
         Returns:
-            Tuple of (final_state dict, signal string).
+            Tuple of (final_state dict, signal string — one of YES/NO/SKIP).
         """
-        self.ticker = company_name
-
-        # Reset the per-run vendor call cache so that two separate propagate()
-        # calls on different dates/tickers never share stale cached data.
+        self.condition_id = condition_id
         clear_session_cache()
-
         self._resolve_pending_entries()
 
         if self.config.get("checkpoint_enabled"):
             self._checkpointer_ctx = get_checkpointer(
-                self.config["data_cache_dir"], company_name
+                self.config["data_cache_dir"], condition_id
             )
             saver = self._checkpointer_ctx.__enter__()
             self.graph = self.workflow.compile(checkpointer=saver)
-
-            step = checkpoint_step(
-                self.config["data_cache_dir"], company_name, str(trade_date)
-            )
+            step = checkpoint_step(self.config["data_cache_dir"], condition_id, trade_date)
             if step is not None:
-                logger.info(
-                    "Resuming from step %d for %s on %s", step, company_name, trade_date
-                )
+                logger.info("Resuming from step %d for %s on %s", step, condition_id, trade_date)
             else:
-                logger.info("Starting fresh for %s on %s", company_name, trade_date)
+                logger.info("Starting fresh for %s on %s", condition_id, trade_date)
 
         try:
-            return self._run_graph(company_name, trade_date)
+            return self._run_graph(
+                condition_id, trade_date, market_question,
+                resolution_criteria, resolution_date, current_probability,
+            )
         finally:
             if self._checkpointer_ctx is not None:
                 self._checkpointer_ctx.__exit__(None, None, None)
@@ -263,58 +216,61 @@ class PolyTradingAgentsGraph:
                 self.graph = self.workflow.compile()
 
     def _run_graph(
-        self, company_name: str, trade_date: str
+        self,
+        condition_id: str,
+        trade_date: str,
+        market_question: str,
+        resolution_criteria: str,
+        resolution_date: str,
+        current_probability: float,
     ) -> Tuple[Dict[str, Any], str]:
-        """Execute the graph and persist the resulting state."""
-        past_context = self.memory_log.get_past_context(company_name)
-        init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date, past_context=past_context
+        past_context = self.memory_log.get_past_context(condition_id)
+        init_state = self.propagator.create_initial_state(
+            condition_id=condition_id,
+            trade_date=trade_date,
+            market_question=market_question,
+            resolution_criteria=resolution_criteria,
+            resolution_date=resolution_date,
+            current_probability=current_probability,
+            past_context=past_context,
         )
         args = self.propagator.get_graph_args()
 
         if self.config.get("checkpoint_enabled"):
-            tid = thread_id(company_name, str(trade_date))
+            tid = thread_id(condition_id, trade_date)
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
         if self.debug:
             trace = []
-            for chunk in self.graph.stream(init_agent_state, **args):
+            for chunk in self.graph.stream(init_state, **args):
                 if chunk.get("messages"):
                     chunk["messages"][-1].pretty_print()
                 trace.append(chunk)
             final_state = trace[-1]
         else:
-            final_state = self.graph.invoke(init_agent_state, **args)
+            final_state = self.graph.invoke(init_state, **args)
 
         self.curr_state = final_state
         self._log_state(trade_date, final_state)
 
         self.memory_log.store_decision(
-            ticker=company_name,
+            ticker=condition_id,
             trade_date=trade_date,
             final_trade_decision=final_state["final_trade_decision"],
         )
 
         if self.config.get("checkpoint_enabled"):
-            clear_checkpoint(
-                self.config["data_cache_dir"], company_name, str(trade_date)
-            )
+            clear_checkpoint(self.config["data_cache_dir"], condition_id, trade_date)
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
     def _log_state(self, trade_date: str, final_state: Dict[str, Any]) -> None:
-        """Persist the final state to a JSON file.
-
-        The ``RunSnapshot`` Pydantic model owns the serialisation contract:
-        adding or renaming fields happens in one place (``schemas.py``) and
-        the schema version is baked in, making future migrations mechanical.
-        """
         snapshot = build_run_snapshot(trade_date, final_state)
         snapshot_dict = snapshot.model_dump()
         self.log_states_dict[str(trade_date)] = snapshot_dict
 
-        safe_ticker = safe_ticker_component(self.ticker)
-        directory = Path(self.config["results_dir"]) / safe_ticker / "PolyPolyTradingStrategy_logs"
+        safe_id = safe_ticker_component(self.condition_id)
+        directory = Path(self.config["results_dir"]) / safe_id / "PolyTradingStrategy_logs"
         directory.mkdir(parents=True, exist_ok=True)
 
         log_path = directory / f"full_states_log_{trade_date}.json"
@@ -322,5 +278,5 @@ class PolyTradingAgentsGraph:
             json.dump(snapshot_dict, f, indent=4)
 
     def process_signal(self, full_signal: str) -> str:
-        """Extract the core Buy/Hold/Sell signal from a full decision string."""
+        """Extract YES / NO / SKIP from the Portfolio Manager's decision."""
         return self.signal_processor.process_signal(full_signal)

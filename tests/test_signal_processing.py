@@ -1,90 +1,72 @@
-"""Tests for the shared rating heuristic and the SignalProcessor adapter.
+"""Tests for the direction heuristic and SignalProcessor adapter.
 
-The Portfolio Manager produces a typed PortfolioDecision via structured
-output and renders it to markdown that always contains a ``**Rating**: X``
-header.  The deterministic heuristic in ``tradingagents.agents.utils.rating``
-is therefore sufficient to extract the rating downstream — no second LLM
-call is needed — and SignalProcessor is now a thin adapter that delegates
-to it.
+The Portfolio Manager produces a PositionDecision rendered to markdown
+with a ``**Direction**: YES/NO/SKIP`` line. Extraction is deterministic.
 """
-
 import pytest
+from unittest.mock import MagicMock
 
-from tradingagents.agents.utils.rating import RATINGS_5_TIER, parse_rating
-from tradingagents.graph.signal_processing import SignalProcessor
-
-
-# ---------------------------------------------------------------------------
-# Heuristic parser
-# ---------------------------------------------------------------------------
+from polytradingagents.graph.signal_processing import SignalProcessor, parse_direction
 
 
 @pytest.mark.unit
-class TestParseRating:
-    def test_explicit_label_buy(self):
-        assert parse_rating("Rating: Buy\nReasoning here.") == "Buy"
+class TestParseDirection:
+    def test_direction_yes(self):
+        assert parse_direction("**Direction**: YES\n**Edge**: +0.15") == "YES"
 
-    def test_explicit_label_overweight(self):
-        assert parse_rating("Rating: Overweight\nDetails.") == "Overweight"
+    def test_direction_no(self):
+        assert parse_direction("**Direction**: NO\n**Edge**: -0.12") == "NO"
 
-    def test_explicit_label_with_markdown_bold_value(self):
-        # Regression: Rating: **Sell** — markdown around the value.
-        assert parse_rating("Rating: **Sell**\nExit immediately.") == "Sell"
+    def test_direction_skip(self):
+        assert parse_direction("**Direction**: SKIP\n**Edge**: +0.01") == "SKIP"
 
-    def test_explicit_label_with_markdown_bold_label(self):
-        assert parse_rating("**Rating**: Underweight\nTrim exposure.") == "Underweight"
+    def test_final_position_line(self):
+        text = "**Direction**: YES\n\nFINAL POSITION: **YES** @ Kelly 10.0%"
+        assert parse_direction(text) == "YES"
 
-    def test_rendered_pm_markdown_shape(self):
-        # The exact shape produced by render_pm_decision must always parse.
-        text = (
-            "**Rating**: Buy\n\n"
-            "**Executive Summary**: Enter at $189-192, 6% portfolio cap.\n\n"
-            "**Investment Thesis**: AI capex cycle intact; institutional flows constructive."
+    def test_rendered_position_decision_shape(self):
+        from polytradingagents.agents.schemas import PositionDecision, render_position_decision
+        dec = PositionDecision(
+            direction="NO",
+            estimated_probability=0.35,
+            market_probability=0.50,
+            edge=-0.15,
+            kelly_fraction=0.12,
+            confidence="High",
+            reasoning="Market overprices YES; strong NO case.",
         )
-        assert parse_rating(text) == "Buy"
+        text = render_position_decision(dec)
+        assert parse_direction(text) == "NO"
 
-    def test_explicit_label_wins_over_prose_with_markdown(self):
-        text = (
-            "The buy thesis is weakened by guidance.\n"
-            "Rating: **Sell**\n"
-            "Exit before earnings."
-        )
-        assert parse_rating(text) == "Sell"
+    def test_no_direction_returns_default(self):
+        assert parse_direction("Plain prose with no direction.") == "SKIP"
 
-    def test_no_rating_returns_default(self):
-        assert parse_rating("No clear directional signal at this time.") == "Hold"
+    def test_all_three_directions_recognised(self):
+        for d in ("YES", "NO", "SKIP"):
+            assert parse_direction(f"Direction: {d}") == d
 
-    def test_no_rating_custom_default(self):
-        assert parse_rating("Plain prose.", default="Underweight") == "Underweight"
-
-    def test_all_five_tiers_recognised(self):
-        for r in RATINGS_5_TIER:
-            assert parse_rating(f"Rating: {r}") == r
-
-
-# ---------------------------------------------------------------------------
-# SignalProcessor: thin adapter over the heuristic
-# ---------------------------------------------------------------------------
+    def test_case_insensitive(self):
+        assert parse_direction("direction: yes") == "YES"
 
 
 @pytest.mark.unit
 class TestSignalProcessor:
-    def test_returns_rating_from_pm_markdown(self):
+    def test_returns_yes(self):
         sp = SignalProcessor()
-        md = "**Rating**: Overweight\n\n**Executive Summary**: Build gradually."
-        assert sp.process_signal(md) == "Overweight"
+        assert sp.process_signal("**Direction**: YES\n**Kelly Fraction**: 10.0%") == "YES"
+
+    def test_returns_skip_for_illiquid(self):
+        sp = SignalProcessor()
+        text = "**Direction**: SKIP\n**Reasoning**: Market failed liquidity check."
+        assert sp.process_signal(text) == "SKIP"
 
     def test_makes_no_llm_calls(self):
-        """SignalProcessor must not invoke the LLM it was constructed with —
-        the rating is parseable from the rendered PM markdown directly."""
-        from unittest.mock import MagicMock
-
         llm = MagicMock()
         sp = SignalProcessor(llm)
-        sp.process_signal("Rating: Buy\nDetails.")
+        sp.process_signal("Direction: YES\nDetails.")
         llm.invoke.assert_not_called()
         llm.with_structured_output.assert_not_called()
 
-    def test_default_when_no_rating_present(self):
+    def test_default_skip_when_unparseable(self):
         sp = SignalProcessor()
-        assert sp.process_signal("Plain prose without a recommendation.") == "Hold"
+        assert sp.process_signal("Plain prose without a recommendation.") == "SKIP"

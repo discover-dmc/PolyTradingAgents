@@ -1,17 +1,16 @@
 """Tests for TradingMemoryLog — storage, deferred reflection, PM injection, legacy removal."""
 
 import pytest
-import pandas as pd
 from unittest.mock import MagicMock, patch
 
 import json
 
-from tradingagents.agents.utils.memory import TradingMemoryLog, _ENTRY_SEP
-from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
-from tradingagents.graph.reflection import Reflector
-from tradingagents.graph.trading_graph import PolyTradingAgentsGraph
-from tradingagents.graph.propagation import Propagator
-from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+from polytradingagents.agents.utils.memory import TradingMemoryLog, _ENTRY_SEP
+from polytradingagents.agents.schemas import PositionDecision, PortfolioDecision, PortfolioRating
+from polytradingagents.graph.reflection import Reflector
+from polytradingagents.graph.trading_graph import PolyTradingAgentsGraph
+from polytradingagents.graph.propagation import Propagator
+from polytradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 
 _SEP = _ENTRY_SEP
 
@@ -61,15 +60,16 @@ def _resolve_entry(log, ticker, date, decision, reflection="Good call."):
     log.update_with_outcome(ticker, date, 0.05, 0.02, 5, reflection)
 
 
-def _price_df(prices):
-    """Minimal DataFrame matching yfinance .history() output shape."""
-    return pd.DataFrame({"Close": prices})
-
 
 def _make_pm_state(past_context=""):
-    """Minimal AgentState dict for portfolio_manager_node."""
+    """Minimal AgentState dict for portfolio_manager_node (Polymarket shape)."""
     return {
-        "company_of_interest": "NVDA",
+        "company_of_interest": "Will NVDA exceed $200 by Q3 2026?",
+        "market_question": "Will NVDA exceed $200 by Q3 2026?",
+        "current_probability": 0.55,
+        "resolution_date": "2026-09-30",
+        "liquidity_ok": True,
+        "liquidity_summary": {},
         "past_context": past_context,
         "risk_debate_state": {
             "history": "Risk debate history.",
@@ -81,27 +81,32 @@ def _make_pm_state(past_context=""):
             "current_conservative_response": "",
             "current_neutral_response": "",
             "count": 1,
+            "latest_speaker": "",
         },
         "analyst_reports": {
-            "market": "Market report.",
-            "social": "Sentiment report.",
             "news": "News report.",
-            "fundamentals": "Fundamentals report.",
+            "base_rate": "Base rate report.",
+            "crowd_forecast": "Crowd forecast report.",
+            "data": "Data report.",
         },
         "investment_plan": "Research plan.",
         "trader_investment_plan": "Trader plan.",
     }
 
 
-def _structured_pm_llm(captured: dict, decision: PortfolioDecision | None = None):
+def _structured_pm_llm(captured: dict, decision: PositionDecision | None = None):
     """Build a MagicMock LLM whose with_structured_output binding captures the
-    prompt and returns a real PortfolioDecision (so render_pm_decision works).
+    prompt and returns a real PositionDecision (so render_position_decision works).
     """
     if decision is None:
-        decision = PortfolioDecision(
-            rating=PortfolioRating.HOLD,
-            executive_summary="Hold the position; await catalyst.",
-            investment_thesis="Balanced view; neither side carried the debate.",
+        decision = PositionDecision(
+            direction="SKIP",
+            estimated_probability=0.55,
+            market_probability=0.55,
+            edge=0.0,
+            kelly_fraction=0.0,
+            confidence="Low",
+            reasoning="Insufficient edge to take a position.",
         )
     structured = MagicMock()
     structured.invoke.side_effect = lambda prompt: (
@@ -497,103 +502,105 @@ class TestDeferredReflection:
         assert "-5.0%" in human_content
         assert "Exit position immediately." in human_content
 
-    # PolyTradingAgentsGraph._fetch_returns
+    # PolyTradingAgentsGraph._fetch_resolution
 
-    def test_fetch_returns_valid_ticker(self):
-        stock_prices = [100.0, 102.0, 104.0, 103.0, 105.0, 106.0]
-        spy_prices   = [400.0, 402.0, 404.0, 403.0, 405.0, 406.0]
+    def test_fetch_resolution_open_market_returns_none(self):
+        """Open markets return None (not yet resolved)."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._returns_cache = {}
-        with patch("yfinance.Ticker") as mock_ticker_cls:
-            def _make_ticker(sym):
-                m = MagicMock()
-                m.history.return_value = _price_df(spy_prices if sym == "SPY" else stock_prices)
-                return m
-            mock_ticker_cls.side_effect = _make_ticker
-            raw, alpha, days = PolyTradingAgentsGraph._fetch_returns(mock_graph, "NVDA", "2026-01-05")
-        assert raw is not None and alpha is not None and days is not None
-        assert isinstance(raw, float) and isinstance(alpha, float) and isinstance(days, int)
-        assert days == 5
+        mock_graph._resolution_cache = {}
+        with patch("polytradingagents.graph.trading_graph.get_market",
+                   return_value={"closed": False, "tokens": []}):
+            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+        assert result is None
 
-    def test_fetch_returns_too_recent(self):
-        """Only 1 data point available → returns (None, None, None), no crash."""
+    def test_fetch_resolution_yes_winner(self):
+        """Closed market with YES winner → True."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._returns_cache = {}
-        with patch("yfinance.Ticker") as mock_ticker_cls:
-            m = MagicMock()
-            m.history.return_value = _price_df([100.0])
-            mock_ticker_cls.return_value = m
-            raw, alpha, days = PolyTradingAgentsGraph._fetch_returns(mock_graph, "NVDA", "2026-04-19")
-        assert raw is None and alpha is None and days is None
+        mock_graph._resolution_cache = {}
+        market = {"closed": True, "tokens": [
+            {"outcome": "YES", "winner": True},
+            {"outcome": "NO", "winner": False},
+        ]}
+        with patch("polytradingagents.graph.trading_graph.get_market", return_value=market):
+            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+        assert result is True
 
-    def test_fetch_returns_delisted(self):
-        """Empty DataFrame → returns (None, None, None), no crash."""
+    def test_fetch_resolution_no_winner(self):
+        """Closed market with NO winner → False."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._returns_cache = {}
-        with patch("yfinance.Ticker") as mock_ticker_cls:
-            m = MagicMock()
-            m.history.return_value = pd.DataFrame({"Close": []})
-            mock_ticker_cls.return_value = m
-            raw, alpha, days = PolyTradingAgentsGraph._fetch_returns(mock_graph, "XXXXXFAKE", "2026-01-10")
-        assert raw is None and alpha is None and days is None
+        mock_graph._resolution_cache = {}
+        market = {"closed": True, "tokens": [
+            {"outcome": "YES", "winner": False},
+            {"outcome": "NO", "winner": True},
+        ]}
+        with patch("polytradingagents.graph.trading_graph.get_market", return_value=market):
+            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+        assert result is False
 
-    def test_fetch_returns_spy_shorter_than_stock(self):
-        """SPY having fewer rows than the stock must not raise IndexError."""
-        stock_prices = [100.0, 102.0, 104.0, 103.0, 105.0, 106.0]
-        spy_prices   = [400.0, 402.0, 403.0]
+    def test_fetch_resolution_caches_result(self):
+        """Second call returns cached result without re-fetching."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._returns_cache = {}
-        with patch("yfinance.Ticker") as mock_ticker_cls:
-            def _make_ticker(sym):
-                m = MagicMock()
-                m.history.return_value = _price_df(spy_prices if sym == "SPY" else stock_prices)
-                return m
-            mock_ticker_cls.side_effect = _make_ticker
-            raw, alpha, days = PolyTradingAgentsGraph._fetch_returns(mock_graph, "NVDA", "2026-01-05")
-        assert raw is not None and alpha is not None and days is not None
-        assert days == 2
+        mock_graph._resolution_cache = {}
+        market = {"closed": True, "tokens": [{"outcome": "YES", "winner": True}]}
+        with patch("polytradingagents.graph.trading_graph.get_market", return_value=market) as m:
+            PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+            PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+        assert m.call_count == 1  # only fetched once
+
+    def test_fetch_resolution_api_error_returns_none(self):
+        """API errors return None without crashing."""
+        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph._resolution_cache = {}
+        with patch("polytradingagents.graph.trading_graph.get_market",
+                   side_effect=Exception("network error")):
+            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "bad-cid")
+        assert result is None
 
     # PolyTradingAgentsGraph._resolve_pending_entries
 
     def test_resolve_resolves_all_tickers(self, tmp_path):
-        """_resolve_pending_entries() resolves ALL pending entries regardless of ticker.
-
-        The previous implementation only resolved the current-run ticker, which
-        caused other tickers' entries to silently accumulate.  The new behaviour
-        resolves every pending entry so the backlog is drained on each run.
-        """
+        """_resolve_pending_entries() resolves ALL pending entries regardless of market id."""
         log = make_log(tmp_path)
-        log.store_decision("AAPL", "2026-01-10", DECISION_BUY)
-        log.store_decision("MSFT", "2026-01-11", DECISION_SELL)
+        log.store_decision("market-cid-1", "2026-01-10", DECISION_BUY)
+        log.store_decision("market-cid-2", "2026-01-11", DECISION_SELL)
         mock_reflector = MagicMock()
         mock_reflector.reflect_on_final_decision.return_value = "Auto-resolved."
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
         mock_graph.memory_log = log
         mock_graph.reflector = mock_reflector
-        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 5))
+        mock_graph._fetch_resolution = MagicMock(return_value=True)
         PolyTradingAgentsGraph._resolve_pending_entries(mock_graph)
-        # Both entries should have been processed
-        assert mock_graph._fetch_returns.call_count == 2
+        assert mock_graph._fetch_resolution.call_count == 2
         assert log.get_pending_entries() == []
 
     def test_resolve_marks_entry_completed(self, tmp_path):
         """After resolve, get_pending_entries() is empty and the entry has a REFLECTION."""
         log = make_log(tmp_path)
-        log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+        log.store_decision("market-cid-1", "2026-01-05", DECISION_BUY)
         mock_reflector = MagicMock()
-        mock_reflector.reflect_on_final_decision.return_value = "Momentum confirmed."
+        mock_reflector.reflect_on_final_decision.return_value = "Correct call."
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
         mock_graph.memory_log = log
         mock_graph.reflector = mock_reflector
-        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 5))
+        mock_graph._fetch_resolution = MagicMock(return_value=True)
         PolyTradingAgentsGraph._resolve_pending_entries(mock_graph)
         assert log.get_pending_entries() == []
         entries = log.load_entries()
         assert len(entries) == 1
         assert entries[0]["pending"] is False
-        assert entries[0]["reflection"] == "Momentum confirmed."
-        assert abs(entries[0]["raw_return"] - 0.05) < 1e-9
-        assert abs(entries[0]["alpha_return"] - 0.02) < 1e-9
+        assert entries[0]["reflection"] == "Correct call."
+        assert entries[0]["raw_return"] == 1.0  # correct prediction → +1
+
+    def test_resolve_skips_unresolved_markets(self, tmp_path):
+        """Pending entries whose markets haven't closed stay pending."""
+        log = make_log(tmp_path)
+        log.store_decision("market-still-open", "2026-01-10", DECISION_BUY)
+        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph.memory_log = log
+        mock_graph.reflector = MagicMock()
+        mock_graph._fetch_resolution = MagicMock(return_value=None)
+        PolyTradingAgentsGraph._resolve_pending_entries(mock_graph)
+        assert len(log.get_pending_entries()) == 1  # still pending
 
 
 # ---------------------------------------------------------------------------
@@ -606,13 +613,17 @@ class TestPortfolioManagerInjection:
 
     def test_past_context_in_initial_state(self):
         propagator = Propagator()
-        state = propagator.create_initial_state("NVDA", "2026-01-10", past_context="some context")
+        state = propagator.create_initial_state(
+            condition_id="mock-cid", trade_date="2026-01-10", past_context="some context"
+        )
         assert "past_context" in state
         assert state["past_context"] == "some context"
 
     def test_past_context_defaults_to_empty(self):
         propagator = Propagator()
-        state = propagator.create_initial_state("NVDA", "2026-01-10")
+        state = propagator.create_initial_state(
+            condition_id="mock-cid", trade_date="2026-01-10"
+        )
         assert state["past_context"] == ""
 
     # PM prompt
@@ -621,9 +632,9 @@ class TestPortfolioManagerInjection:
         captured = {}
         llm = _structured_pm_llm(captured)
         pm_node = create_portfolio_manager(llm)
-        state = _make_pm_state(past_context="[2026-01-05 | NVDA | Buy | +5.0% | +2.0% | 5d]\nGreat call.")
+        state = _make_pm_state(past_context="[2026-01-05 | market-cid | YES | +1.0 | 5d]\nGreat call.")
         pm_node(state)
-        assert "Lessons from prior decisions and outcomes" in captured["prompt"]
+        assert "calibration lessons" in captured["prompt"].lower() or "prior" in captured["prompt"].lower()
         assert "Great call." in captured["prompt"]
 
     def test_pm_no_past_context_no_section(self):
@@ -633,35 +644,33 @@ class TestPortfolioManagerInjection:
         pm_node = create_portfolio_manager(llm)
         state = _make_pm_state(past_context="")
         pm_node(state)
-        assert "Lessons from prior decisions" not in captured["prompt"]
+        assert "calibration lessons" not in captured["prompt"].lower()
 
-    def test_pm_returns_rendered_markdown_with_rating(self):
-        """The structured PortfolioDecision is rendered to markdown that
-        downstream consumers (memory log, signal processor, CLI display)
-        can parse without any extra LLM call."""
+    def test_pm_returns_rendered_markdown_with_direction(self):
+        """PositionDecision is rendered to markdown with Direction/Edge/Kelly fields."""
         captured = {}
-        decision = PortfolioDecision(
-            rating=PortfolioRating.OVERWEIGHT,
-            executive_summary="Build position gradually over the next two weeks.",
-            investment_thesis="AI capex cycle remains intact; institutional flows constructive.",
-            price_target=215.0,
-            time_horizon="3-6 months",
+        decision = PositionDecision(
+            direction="YES",
+            estimated_probability=0.70,
+            market_probability=0.50,
+            edge=0.20,
+            kelly_fraction=0.15,
+            confidence="High",
+            reasoning="Strong YES evidence from all analysts.",
         )
         llm = _structured_pm_llm(captured, decision)
         pm_node = create_portfolio_manager(llm)
         result = pm_node(_make_pm_state())
         md = result["final_trade_decision"]
-        assert "**Rating**: Overweight" in md
-        assert "**Executive Summary**: Build position gradually" in md
-        assert "**Investment Thesis**: AI capex cycle" in md
-        assert "**Price Target**: 215.0" in md
-        assert "**Time Horizon**: 3-6 months" in md
+        assert "**Direction**: YES" in md
+        assert "70.0%" in md  # estimated_probability
+        assert "20.0%" in md  # edge
+        assert "15.0%" in md  # kelly_fraction
 
     def test_pm_falls_back_to_freetext_when_structured_unavailable(self):
         """If a provider does not support with_structured_output, the agent
-        falls back to a plain invoke and returns whatever prose the model
-        produced, so the pipeline never blocks."""
-        plain_response = "**Rating**: Sell\n\nExit ahead of guidance."
+        falls back to a plain invoke so the pipeline never blocks."""
+        plain_response = "**Direction**: NO\n\nSell the NO token."
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
         llm.invoke.return_value = MagicMock(content=plain_response)
@@ -736,17 +745,17 @@ class TestLegacyRemoval:
 
     def test_financial_situation_memory_removed(self):
         """FinancialSituationMemory must not be importable from the memory module."""
-        import tradingagents.agents.utils.memory as m
+        import polytradingagents.agents.utils.memory as m
         assert not hasattr(m, "FinancialSituationMemory")
 
     def test_bm25_not_imported(self):
         """rank_bm25 must not be present in the memory module namespace."""
-        import tradingagents.agents.utils.memory as m
+        import polytradingagents.agents.utils.memory as m
         assert not hasattr(m, "BM25Okapi")
 
-    def test_reflect_and_remember_removed(self):
-        """PolyTradingAgentsGraph must not expose reflect_and_remember."""
-        assert not hasattr(PolyTradingAgentsGraph, "reflect_and_remember")
+    def test_fetch_returns_removed(self):
+        """PolyTradingAgentsGraph must not expose _fetch_returns (replaced by _fetch_resolution)."""
+        assert not hasattr(PolyTradingAgentsGraph, "_fetch_returns")
 
     def test_portfolio_manager_no_memory_param(self):
         """create_portfolio_manager accepts only llm; passing memory= raises TypeError."""
@@ -760,8 +769,10 @@ class TestLegacyRemoval:
         import functools
 
         fake_state = {
-            "final_trade_decision": "Rating: Buy\nBuy NVDA.",
-            "company_of_interest": "NVDA",
+            "final_trade_decision": "**Direction**: YES\nBuy YES token.",
+            "condition_id": "mock-cid-001",
+            "company_of_interest": "Will X happen?",
+            "market_question": "Will X happen?",
             "trade_date": "2026-01-10",
             "analyst_reports": {},
             "investment_debate_state": {
@@ -778,21 +789,23 @@ class TestLegacyRemoval:
             },
         }
         mock_graph = MagicMock()
+        mock_graph.condition_id = "mock-cid-001"
         mock_graph.memory_log = TradingMemoryLog({"memory_log_path": str(tmp_path / "mem.md")})
         mock_graph.log_states_dict = {}
         mock_graph.debug = False
-        mock_graph.config = {"results_dir": str(tmp_path)}
+        mock_graph.config = {"results_dir": str(tmp_path), "checkpoint_enabled": False}
         mock_graph.graph.invoke.return_value = fake_state
         mock_graph.propagator.create_initial_state.return_value = fake_state
         mock_graph.propagator.get_graph_args.return_value = {}
-        mock_graph.signal_processor.process_signal.return_value = "Buy"
-        # Bind the real _run_graph so propagate's call to self._run_graph executes
-        # the actual write path instead of the auto-MagicMock.
+        mock_graph.signal_processor.process_signal.return_value = "YES"
         mock_graph._run_graph = functools.partial(
             PolyTradingAgentsGraph._run_graph, mock_graph
         )
-        PolyTradingAgentsGraph.propagate(mock_graph, "NVDA", "2026-01-10")
+        PolyTradingAgentsGraph.propagate(
+            mock_graph, condition_id="mock-cid-001", trade_date="2026-01-10",
+            market_question="Will X happen?"
+        )
         entries = mock_graph.memory_log.load_entries()
         assert len(entries) == 1
-        assert entries[0]["ticker"] == "NVDA"
+        assert entries[0]["ticker"] == "mock-cid-001"
         assert entries[0]["pending"] is True
