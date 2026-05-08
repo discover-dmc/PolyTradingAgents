@@ -6,7 +6,7 @@ import time
 from collections import deque
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import typer
 from dotenv import load_dotenv
@@ -53,8 +53,14 @@ console = Console()
 
 app = typer.Typer(
     name="polyagents",
-    help="PolyAgents: Multi-Agent LLM framework for Polymarket prediction markets.",
+    help=(
+        "PolyAgents: Multi-Agent LLM framework for Polymarket prediction markets.\n\n"
+        "  polyagents          — interactive wizard: pick one market and run deep analysis\n"
+        "  polyagents scan     — autonomous mode: discover liquid markets and analyse them all"
+    ),
     add_completion=True,
+    invoke_without_command=True,
+    no_args_is_help=False,
 )
 
 # ---------------------------------------------------------------------------
@@ -555,11 +561,12 @@ def display_complete_report(final_state: dict):
 
 
 # ---------------------------------------------------------------------------
-# User input wizard
+# ---------------------------------------------------------------------------
+# Welcome banner
 # ---------------------------------------------------------------------------
 
-def get_user_selections() -> dict:
-    # Welcome banner
+def _welcome() -> None:
+    """Print the ASCII banner and any announcements."""
     welcome_txt = (Path(__file__).parent / "static" / "welcome.txt").read_text(encoding="utf-8")
     console.print(Align.center(Panel(
         f"{welcome_txt}\n"
@@ -570,9 +577,15 @@ def get_user_selections() -> dict:
         title="Welcome to PolyAgents",
     )))
     console.print()
-
     announcements = fetch_announcements()
     display_announcements(console, announcements)
+
+
+# ---------------------------------------------------------------------------
+# User input wizard
+# ---------------------------------------------------------------------------
+
+def get_user_selections() -> dict:
 
     def box(title: str, prompt: str, hint: str = ""):
         body = f"[bold]{title}[/bold]\n[dim]{prompt}[/dim]"
@@ -892,7 +905,16 @@ def run_analysis(checkpoint: bool = False):
 # CLI commands
 # ---------------------------------------------------------------------------
 
-@app.command()
+@app.callback(invoke_without_command=True)
+def _default(ctx: typer.Context) -> None:
+    """Interactive wizard — pick one market and run a deep single-market analysis."""
+    if ctx.invoked_subcommand is not None:
+        return  # a subcommand (e.g. scan) was provided — let it handle things
+    _welcome()
+    run_analysis(checkpoint=False)
+
+
+@app.command("analyze")
 def analyze(
     checkpoint: bool = typer.Option(
         False, "--checkpoint",
@@ -903,12 +925,82 @@ def analyze(
         help="Delete all saved checkpoints before running.",
     ),
 ):
-    """Run a full multi-agent analysis on a Polymarket condition."""
+    """Interactive wizard — alias for the default command, with checkpoint options."""
     if clear_checkpoints:
         from polyagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
+    _welcome()
     run_analysis(checkpoint=checkpoint)
+
+
+@app.command("scan")
+def scan(
+    limit: int = typer.Option(
+        10, "--limit", "-n",
+        help="Maximum number of markets to fetch and analyse.",
+    ),
+    keyword: Optional[str] = typer.Option(
+        None, "--keyword", "-k",
+        help="Filter markets by keyword/topic (e.g. 'Trump', 'Fed rate', 'Bitcoin').",
+    ),
+    hitl: bool = typer.Option(
+        False, "--hitl", "-i",
+        help="Human-in-the-loop: pause before each market and ask for approval.",
+    ),
+    depth: int = typer.Option(
+        1, "--depth", "-d",
+        help="Debate rounds per market. 1=fast, 3=balanced, 5=thorough.",
+    ),
+    analysts: Optional[str] = typer.Option(
+        None, "--analysts", "-a",
+        help="Comma-separated analyst keys to run. Default: all four. "
+             "Options: news, base_rate, crowd_forecast, data",
+    ),
+    min_volume: float = typer.Option(
+        1000.0, "--min-volume",
+        help="Minimum 24h volume in USD to include a market.",
+    ),
+    min_liquidity: float = typer.Option(
+        500.0, "--min-liquidity",
+        help="Minimum total liquidity in USD to include a market.",
+    ),
+    min_edge: float = typer.Option(
+        0.03, "--min-edge",
+        help="Minimum edge (|estimated_prob - market_prob|) to flag as actionable in summary.",
+    ),
+    save_dir: Optional[Path] = typer.Option(
+        None, "--save-dir",
+        help="Directory to save scan results JSON. Defaults to ./reports/scans/",
+    ),
+    no_save: bool = typer.Option(
+        False, "--no-save",
+        help="Skip saving results to disk.",
+    ),
+):
+    """Autonomous scan — discover liquid markets and analyse them end-to-end.
+
+    Fetches the top liquid markets from Polymarket (or searches by keyword),
+    runs the full multi-agent pipeline on each, and outputs a portfolio summary
+    table of YES / NO / SKIP decisions with edge and Kelly sizing.
+
+    Set POLYAGENTS_PROVIDER, POLYAGENTS_QUICK_MODEL, POLYAGENTS_DEEP_MODEL env
+    vars to skip the LLM config prompt on every run.
+    """
+    from cli.scan import run_scan
+    _welcome()
+    run_scan(
+        limit=limit,
+        keyword=keyword,
+        hitl=hitl,
+        depth=depth,
+        analysts=analysts,
+        min_volume=min_volume,
+        min_liquidity=min_liquidity,
+        min_edge=min_edge,
+        save_dir=save_dir,
+        no_save=no_save,
+    )
 
 
 if __name__ == "__main__":
