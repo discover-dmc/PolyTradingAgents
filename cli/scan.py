@@ -95,50 +95,88 @@ def _llm_config_interactive() -> dict:
 # Market fetching helpers
 # ---------------------------------------------------------------------------
 
+def _prescreen_one(market: dict) -> dict | None:
+    """Run get_liquidity_summary() for a single market.
+
+    Returns the market dict enriched with live mid-price and liquidity details,
+    or None if the market fails the liquidity gate.
+    """
+    from polyagents.dataflows.polymarket import get_liquidity_summary
+    cid = (market.get("conditionId") or market.get("condition_id") or "").strip().lower()
+    if not cid:
+        return None
+    try:
+        summary = get_liquidity_summary(cid)
+        if not summary.get("liquid", False):
+            return None
+        # Enrich the market dict with live data from the summary
+        market["_cid"]       = cid
+        market["_mid_price"] = summary.get("yes_mid_price") or _market_mid_price(market)
+        market["_summary"]   = summary
+        return market
+    except Exception:
+        return None
+
+
 def _fetch_markets(
     keyword: str | None,
     limit: int,
     min_volume: float,
     min_liquidity: float,
 ) -> list[dict]:
-    """Return a list of candidate markets from Polymarket.
+    """Return a list of pre-screened liquid markets from Polymarket.
 
-    Fetches a larger pool than `limit` from the API so that post-filtering
-    still yields enough markets. The Gamma API returns at most 100 per page;
-    we request 100 regardless of limit so we have a full pool to filter from.
+    Steps:
+    1. Fetch a broad pool (up to 100) from the Gamma API.
+    2. Run get_liquidity_summary() on each in parallel — this applies the full
+       TradeSniper filter (volume + liquidity + spread + effective depth) so we
+       only pass markets to the graph that will actually be analysed.
+    3. Return up to `limit` markets, sorted by 24h volume descending.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from polyagents.dataflows.polymarket import get_active_markets, search_markets
 
-    api_fetch = max(100, limit * 3)   # always over-fetch for a decent filter pool
+    api_fetch = max(100, limit * 3)
 
     if keyword:
         console.print(f"[cyan]Searching markets for '[bold]{keyword}[/bold]'…[/cyan]")
-        markets = search_markets(keyword, limit=api_fetch)
+        raw = search_markets(keyword, limit=api_fetch)
     else:
-        console.print(f"[cyan]Fetching liquid markets from Polymarket (target: {limit})…[/cyan]")
-        markets = get_active_markets(
+        console.print(f"[cyan]Fetching markets from Polymarket…[/cyan]")
+        raw = get_active_markets(
             limit=api_fetch,
             min_volume=min_volume,
             min_liquidity=min_liquidity,
         )
 
-    # Normalise & deduplicate condition IDs
+    # Deduplicate by conditionId before making API calls
     seen: set[str] = set()
-    out: list[dict] = []
-    for m in markets:
+    candidates: list[dict] = []
+    for m in raw:
         cid = (m.get("conditionId") or m.get("condition_id") or "").strip().lower()
-        if not cid or cid in seen:
-            continue
-        vol = float(m.get("volume", 0) or 0)
-        liq = float(m.get("liquidity", 0) or 0)
-        if vol < min_volume or liq < min_liquidity:
-            continue
-        seen.add(cid)
-        out.append(m)
-        if len(out) >= limit:
-            break
+        if cid and cid not in seen:
+            seen.add(cid)
+            candidates.append(m)
 
-    return out
+    console.print(f"[dim]Pre-screening {len(candidates)} candidates for liquidity…[/dim]")
+
+    liquid: list[dict] = []
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futures = {ex.submit(_prescreen_one, m): m for m in candidates}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                liquid.append(result)
+
+    # Sort by 24h volume descending so highest-activity markets come first
+    liquid.sort(key=lambda m: float(m.get("volume", 0) or 0), reverse=True)
+
+    n = len(liquid)
+    console.print(
+        f"[green]{n} liquid market(s) found[/green] — "
+        f"[dim]analysing up to {min(n, limit)}[/dim]"
+    )
+    return liquid[:limit]
 
 
 def _market_mid_price(market: dict) -> float:
@@ -421,9 +459,10 @@ def run_scan(
     results: list[dict] = []
 
     for idx, market in enumerate(markets, 1):
-        cid = (market.get("conditionId") or market.get("condition_id") or "").lower()
+        # Use pre-screened CID and live mid-price from _prescreen_one if available
+        cid = (market.get("_cid") or market.get("conditionId") or market.get("condition_id") or "").lower()
         question = market.get("question") or market.get("title") or ""
-        mid_price = _market_mid_price(market)
+        mid_price = market.get("_mid_price") or _market_mid_price(market)
 
         _print_market_header(idx, len(markets), market)
 

@@ -249,11 +249,16 @@ def get_liquidity_summary(condition_id: str) -> dict:
     volume = float(market.get("volume24hr", 0) or market.get("volume", 0) or 0)
     liquidity = float(market.get("liquidity", 0) or 0)
 
+    # Polymarket's primary liquidity is AMM-based, not CLOB limit orders.
+    # The CLOB orderbook is often near-empty even on well-traded markets.
+    # Use 5% of AMM liquidity as a conservative depth proxy when CLOB is thin.
+    effective_depth = max(yes_depth, liquidity * 0.05)
+
     liquid = (
         volume >= min_volume
         and liquidity >= min_liquidity
         and (yes_spread is None or yes_spread <= max_spread)
-        and yes_depth >= min_depth
+        and effective_depth >= min_depth
     )
 
     return {
@@ -264,7 +269,7 @@ def get_liquidity_summary(condition_id: str) -> dict:
         "liquidity": liquidity,
         "yes_mid_price": yes_mid,
         "yes_spread": yes_spread,
-        "yes_depth_usd": yes_depth,
+        "yes_depth_usd": effective_depth,
         "end_date": market.get("end_date_iso", market.get("endDate", "")),
         "active": market.get("active", True),
         "liquid": liquid,

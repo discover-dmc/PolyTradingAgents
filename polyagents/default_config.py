@@ -41,7 +41,7 @@ DEFAULT_CONFIG = {
     "polymarket_min_volume": 1000.0,        # Minimum 24h volume in USD
     "polymarket_min_liquidity": 500.0,      # Minimum total liquidity in USD
     "polymarket_max_spread": 0.10,          # Maximum bid-ask spread (10%)
-    "polymarket_min_depth_usd": 200.0,      # Min orderbook depth within ±5¢ of mid
+    "polymarket_min_depth_usd": 25.0,       # Min effective depth (CLOB + 5% of AMM liquidity)
 
     # Kelly criterion cap — never risk more than this fraction of bankroll per trade
     "kelly_cap": 0.25,
