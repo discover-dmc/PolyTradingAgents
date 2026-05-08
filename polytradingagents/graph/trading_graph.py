@@ -24,6 +24,7 @@ from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
 from polytradingagents.dataflows.interface import clear_session_cache
+from polytradingagents.dataflows.polymarket import get_market
 
 
 class PolyTradingAgentsGraph:
@@ -117,7 +118,6 @@ class PolyTradingAgentsGraph:
         if condition_id in self._resolution_cache:
             return self._resolution_cache[condition_id]
         try:
-            from polytradingagents.dataflows.polymarket import get_market
             market = get_market(condition_id)
             if not market.get("closed", False):
                 return None  # still open — don't cache
@@ -145,8 +145,20 @@ class PolyTradingAgentsGraph:
             if outcome is None:
                 continue
             # Map binary outcome to raw_return: +1.0 if correct, -1.0 if wrong
+            from polytradingagents.graph.signal_processing import parse_direction
             decision_text = entry.get("decision", "").upper()
-            predicted_yes = "YES" in decision_text and "NO" not in decision_text.split("YES")[0]
+            direction = parse_direction(entry.get("decision", ""))
+            if direction == "SKIP":
+                # Legacy equity format fallback: map Buy/Sell to YES/NO
+                if any(k in decision_text for k in ("BUY", "OVERWEIGHT", "LONG")):
+                    direction = "YES"
+                elif any(k in decision_text for k in ("SELL", "UNDERWEIGHT", "SHORT")):
+                    direction = "NO"
+                else:
+                    continue  # no clear signal — skip this entry
+            if direction == "SKIP":
+                continue
+            predicted_yes = (direction == "YES")
             correct = (outcome == predicted_yes)
             raw_return = 1.0 if correct else -1.0
             reflection = self.reflector.reflect_on_final_decision(

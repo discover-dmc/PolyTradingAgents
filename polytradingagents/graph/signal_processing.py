@@ -22,11 +22,6 @@ def parse_direction(text: str, default: str = "SKIP") -> str:
     m = _FINAL_RE.search(text)
     if m and m.group(1).upper() in _VALID:
         return m.group(1).upper()
-    # Last-resort scan
-    for word in text.upper().split():
-        clean = word.strip("*:.,")
-        if clean in _VALID:
-            return clean
     return default
 
 
