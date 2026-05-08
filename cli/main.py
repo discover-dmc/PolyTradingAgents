@@ -937,8 +937,8 @@ def analyze(
 @app.command("scan")
 def scan(
     limit: int = typer.Option(
-        10, "--limit", "-n",
-        help="Maximum number of markets to fetch and analyse.",
+        50, "--limit", "-n",
+        help="Maximum number of markets to analyse. Fetches a larger pool from the API and filters down.",
     ),
     keyword: Optional[str] = typer.Option(
         None, "--keyword", "-k",

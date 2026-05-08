@@ -101,16 +101,23 @@ def _fetch_markets(
     min_volume: float,
     min_liquidity: float,
 ) -> list[dict]:
-    """Return a list of candidate markets from Polymarket."""
+    """Return a list of candidate markets from Polymarket.
+
+    Fetches a larger pool than `limit` from the API so that post-filtering
+    still yields enough markets. The Gamma API returns at most 100 per page;
+    we request 100 regardless of limit so we have a full pool to filter from.
+    """
     from polyagents.dataflows.polymarket import get_active_markets, search_markets
+
+    api_fetch = max(100, limit * 3)   # always over-fetch for a decent filter pool
 
     if keyword:
         console.print(f"[cyan]Searching markets for '[bold]{keyword}[/bold]'…[/cyan]")
-        markets = search_markets(keyword, limit=limit * 2)
+        markets = search_markets(keyword, limit=api_fetch)
     else:
-        console.print(f"[cyan]Fetching top {limit} liquid markets from Polymarket…[/cyan]")
+        console.print(f"[cyan]Fetching liquid markets from Polymarket (target: {limit})…[/cyan]")
         markets = get_active_markets(
-            limit=limit * 2,
+            limit=api_fetch,
             min_volume=min_volume,
             min_liquidity=min_liquidity,
         )
@@ -189,42 +196,44 @@ def _analyze_market(
         final_state.get("final_trade_decision", "")
     )
 
-    # Extract decision details from structured output
+    # Extract decision details from the rendered PositionDecision string.
+    # render_position_decision() formats values as percentages, e.g.:
+    #   **Edge**: +7.3%
+    #   **Kelly Fraction**: 15.0%
+    #   **Estimated Probability**: 65.0%
     decision_text = final_state.get("final_trade_decision", "")
     edge = None
     kelly = None
     estimated_prob = None
+    market_prob_override = None
     try:
         import re
 
-        def _parse_prob(line: str) -> float | None:
-            """Extract a probability value from a line, normalising % vs decimal."""
-            m = re.search(r"[-+]?\d*\.?\d+", line)
-            if not m:
-                return None
-            val = float(m.group())
-            # If value looks like a percentage (e.g. 45 instead of 0.45), normalise
-            if val > 1.0:
-                val = val / 100.0
-            return val if 0.0 <= val <= 1.0 else None
-
-        def _parse_fraction(line: str) -> float | None:
-            """Extract a plain decimal fraction (Kelly, edge) from a line."""
-            m = re.search(r"[-+]?\d*\.?\d+", line)
-            if not m:
-                return None
-            val = float(m.group())
-            # edge/kelly are always stored as decimals (e.g. 0.07, not 7)
-            return val if -1.0 <= val <= 1.0 else None
+        def _parse_pct_field(line: str) -> float | None:
+            """Parse a value that may be formatted as '7.3%', '+7.3%', or '0.073'."""
+            # Prefer explicit percentage notation: captures the sign too
+            m = re.search(r"([+-]?\d+\.?\d*)\s*%", line)
+            if m:
+                val = float(m.group(1)) / 100.0
+                return val if -1.0 <= val <= 1.0 else None
+            # Fallback: plain decimal already in [0, 1]
+            m = re.search(r"([+-]?\d*\.?\d+)", line)
+            if m:
+                val = float(m.group(1))
+                return val if -1.0 <= val <= 1.0 else None
+            return None
 
         for line in (decision_text or "").splitlines():
             ll = line.lower()
-            if ("estimated_probability" in ll or "estimated probability" in ll) and estimated_prob is None:
-                estimated_prob = _parse_prob(line)
+            if ("estimated probability" in ll or "estimated_probability" in ll) and estimated_prob is None:
+                estimated_prob = _parse_pct_field(line)
+            elif "market probability" in ll and market_prob_override is None:
+                market_prob_override = _parse_pct_field(line)
             elif "kelly" in ll and kelly is None:
-                kelly = _parse_fraction(line)
-            elif "edge" in ll and edge is None:
-                edge = _parse_fraction(line)
+                kelly = _parse_pct_field(line)
+            elif "**edge**" in ll and edge is None:
+                # Match specifically "**Edge**:" to avoid false hits on other lines
+                edge = _parse_pct_field(line)
     except Exception:
         pass
 
