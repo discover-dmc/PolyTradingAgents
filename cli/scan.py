@@ -189,28 +189,42 @@ def _analyze_market(
         final_state.get("final_trade_decision", "")
     )
 
-    # Extract decision details if available
+    # Extract decision details from structured output
     decision_text = final_state.get("final_trade_decision", "")
     edge = None
     kelly = None
     estimated_prob = None
     try:
-        from polyagents.agents.schemas import PositionDecision
         import re
-        # Try to find structured fields in the decision text
+
+        def _parse_prob(line: str) -> float | None:
+            """Extract a probability value from a line, normalising % vs decimal."""
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if not m:
+                return None
+            val = float(m.group())
+            # If value looks like a percentage (e.g. 45 instead of 0.45), normalise
+            if val > 1.0:
+                val = val / 100.0
+            return val if 0.0 <= val <= 1.0 else None
+
+        def _parse_fraction(line: str) -> float | None:
+            """Extract a plain decimal fraction (Kelly, edge) from a line."""
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if not m:
+                return None
+            val = float(m.group())
+            # edge/kelly are always stored as decimals (e.g. 0.07, not 7)
+            return val if -1.0 <= val <= 1.0 else None
+
         for line in (decision_text or "").splitlines():
-            if "edge" in line.lower():
-                m = re.search(r"[-+]?\d*\.?\d+", line)
-                if m:
-                    edge = float(m.group())
-            if "kelly" in line.lower():
-                m = re.search(r"[-+]?\d*\.?\d+", line)
-                if m:
-                    kelly = float(m.group())
-            if "estimated_probability" in line.lower() or "estimated probability" in line.lower():
-                m = re.search(r"[-+]?\d*\.?\d+", line)
-                if m:
-                    estimated_prob = float(m.group())
+            ll = line.lower()
+            if ("estimated_probability" in ll or "estimated probability" in ll) and estimated_prob is None:
+                estimated_prob = _parse_prob(line)
+            elif "kelly" in ll and kelly is None:
+                kelly = _parse_fraction(line)
+            elif "edge" in ll and edge is None:
+                edge = _parse_fraction(line)
     except Exception:
         pass
 

@@ -34,9 +34,15 @@ def get_market(condition_id: str) -> dict:
     Returns a dict with keys:
         question, description, end_date_iso, active, closed,
         tokens (list of {outcome, token_id}), volume, liquidity
+
+    Note: the Gamma API does not support GET /markets/{conditionId} as a path
+    parameter — it must be passed as a query param: GET /markets?conditionId=...
     """
-    data = _get(f"{POLYMARKET_GAMMA_API}/markets/{condition_id}")
-    return data
+    data = _get(f"{POLYMARKET_GAMMA_API}/markets", params={"conditionId": condition_id})
+    markets = data if isinstance(data, list) else data.get("markets", [])
+    if not markets:
+        raise ValueError(f"Market not found for condition_id: {condition_id}")
+    return markets[0]
 
 
 def search_markets(query: str, limit: int = 20, active_only: bool = True) -> list[dict]:

@@ -11,16 +11,21 @@ ProviderModeOptions = Dict[str, Dict[str, List[ModelOption]]]
 MODEL_OPTIONS: ProviderModeOptions = {
     "openai": {
         "quick": [
-            ("GPT-5.4 Mini - Fast, strong coding and tool use", "gpt-5.4-mini"),
-            ("GPT-5.4 Nano - Cheapest, high-volume tasks", "gpt-5.4-nano"),
-            ("GPT-5.4 - Latest frontier, 1M context", "gpt-5.4"),
-            ("GPT-4.1 - Smartest non-reasoning model", "gpt-4.1"),
+            ("GPT-4.1 Mini - Fast, cost-effective (recommended)", "gpt-4.1-mini"),
+            ("GPT-4o Mini - Compact, fast",                       "gpt-4o-mini"),
+            ("GPT-4.1 - Balanced flagship",                       "gpt-4.1"),
+            ("GPT-4o - Previous generation flagship",             "gpt-4o"),
+            ("o4-mini - Reasoning, fast",                         "o4-mini"),
+            ("o3-mini - Reasoning, lightweight",                  "o3-mini"),
+            ("Custom model ID",                                   "custom"),
         ],
         "deep": [
-            ("GPT-5.4 - Latest frontier, 1M context", "gpt-5.4"),
-            ("GPT-5.2 - Strong reasoning, cost-effective", "gpt-5.2"),
-            ("GPT-5.4 Mini - Fast, strong coding and tool use", "gpt-5.4-mini"),
-            ("GPT-5.4 Pro - Most capable, expensive ($30/$180 per 1M tokens)", "gpt-5.4-pro"),
+            ("GPT-4.1 - Balanced flagship (recommended)",         "gpt-4.1"),
+            ("GPT-4o - Previous generation flagship",             "gpt-4o"),
+            ("o3 - Strong reasoning",                             "o3"),
+            ("o4-mini - Reasoning, fast",                         "o4-mini"),
+            ("o1 - Original reasoning model",                     "o1"),
+            ("Custom model ID",                                   "custom"),
         ],
     },
     "anthropic": {
