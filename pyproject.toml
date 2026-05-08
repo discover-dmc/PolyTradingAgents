@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polytradingagents"
+version = "0.1.0"
+description = "PolyTradingAgents: Multi-Agent LLM Framework for Polymarket Prediction Markets"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain-core>=0.3.81",
+    "langchain-anthropic>=0.3.15",
+    "langchain-experimental>=0.3.4",
+    "langchain-google-genai>=4.0.0",
+    "langchain-openai>=0.3.23",
+    "langgraph>=0.4.8",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "pandas>=2.3.0",
+    "parsel>=1.10.0",
+    "pytz>=2025.2",
+    "questionary>=2.1.0",
+    "requests>=2.32.4",
+    "rich>=14.0.0",
+    "typer>=0.21.0",
+    "setuptools>=80.9.0",
+    "stockstats>=0.6.5",
+    "tqdm>=4.67.1",
+    "typing-extensions>=4.14.0",
+    "yfinance>=0.2.63",
+    "py-clob-client>=0.21.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+polytradingagents = "cli.main:app"
+
+[tool.setuptools.packages.find]
+include = ["polytradingagents*", "cli*"]
+
+[tool.setuptools.package-data]
+cli = ["static/*"]
+polytradingagents = ["agents/prompts/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "unit: fast isolated unit tests",
+    "integration: tests requiring external services",
+    "smoke: quick sanity-check tests",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
