@@ -54,6 +54,9 @@ filterwarnings = [
     "ignore::DeprecationWarning",
 ]
 
+[project.optional-dependencies]
+redis = ["redis>=5.0.0"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",

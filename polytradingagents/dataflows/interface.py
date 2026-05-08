@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from typing import Any, Annotated
 
 try:
@@ -9,30 +8,45 @@ try:
 except ImportError:  # pragma: no cover
     _DataFrame = Any  # type: ignore[assignment,misc]
 
+from .cache import CacheBackend, InMemoryCache, make_cache, make_key
+
 # ---------------------------------------------------------------------------
 # Session-scoped vendor call cache
 #
-# Identical tool calls within a single propagate() run (e.g. both the social
-# and news analysts calling get_news() with the same ticker/date range) are
-# served from this cache instead of making a second HTTP round-trip.
+# Identical tool calls within a single propagate() run (e.g. two analysts
+# calling get_news() with the same query) are served from this cache instead
+# of making a second HTTP round-trip.
 #
-# The cache is keyed by (method, positional_args) and is cleared at the start
-# of every propagate() call via clear_session_cache().  Thread-safe: a Lock
-# guards all reads and writes so parallel analyst threads don't race.
+# The cache is cleared at the start of every propagate() call via
+# clear_session_cache().  The default backend is InMemoryCache (thread-safe,
+# zero deps).  Switch to Redis by calling configure_session_cache() before
+# the first propagate(), or by setting cache_backend="redis" in the config.
 # ---------------------------------------------------------------------------
 
-_session_cache: dict[tuple, Any] = {}
-_session_cache_lock = threading.Lock()
+_session_cache: CacheBackend = InMemoryCache()
+
+
+def configure_session_cache(backend: CacheBackend) -> None:
+    """Replace the session cache backend.
+
+    Call this once at startup before any ``propagate()`` run if you want a
+    non-default backend (e.g. Redis)::
+
+        from polytradingagents.dataflows.cache import make_cache
+        from polytradingagents.dataflows.interface import configure_session_cache
+        configure_session_cache(make_cache("redis", namespace="pta:session"))
+    """
+    global _session_cache
+    _session_cache = backend
 
 
 def clear_session_cache() -> None:
     """Reset the per-run vendor call cache.
 
-    Must be called at the start of each ``propagate()`` run so that stale
-    cached results from a previous run are never served.
+    Called at the start of each ``propagate()`` run so stale results from a
+    previous run are never served.
     """
-    with _session_cache_lock:
-        _session_cache.clear()
+    _session_cache.clear()
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -181,17 +195,16 @@ def route_to_vendor(method: str, *args: Any, **kwargs: Any) -> str | _DataFrame:
 
     Results are stored in the session cache so that identical calls within a
     single ``propagate()`` run (e.g. two analysts querying the same news for
-    the same ticker) are served from memory rather than making a second HTTP
-    request.  Call :func:`clear_session_cache` to reset between runs.
+    the same condition) are served from the cache rather than making a second
+    HTTP request.  Call :func:`clear_session_cache` to reset between runs.
 
     Returns the vendor function's result — typically a formatted string or a
     ``pandas.DataFrame`` depending on the method.
     """
-    # Positional args only; kwargs are uncommon in this codebase.
-    cache_key = (method,) + args
-    with _session_cache_lock:
-        if cache_key in _session_cache:
-            return _session_cache[cache_key]
+    cache_key = make_key(method, args)
+    cached = _session_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
@@ -223,6 +236,6 @@ def route_to_vendor(method: str, *args: Any, **kwargs: Any) -> str | _DataFrame:
     else:
         raise RuntimeError(f"No available vendor for '{method}'")
 
-    with _session_cache_lock:
-        _session_cache[cache_key] = result
+    ttl = get_config().get("session_cache_ttl")  # None for memory, int for Redis
+    _session_cache.set(cache_key, result, ttl=ttl)
     return result

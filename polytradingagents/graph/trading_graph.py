@@ -23,7 +23,8 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
-from polytradingagents.dataflows.interface import clear_session_cache
+from polytradingagents.dataflows.interface import clear_session_cache, configure_session_cache
+from polytradingagents.dataflows.cache import make_cache
 from polytradingagents.dataflows.polymarket import get_market
 
 
@@ -85,8 +86,22 @@ class PolyTradingAgentsGraph:
         self.curr_state = None
         self.condition_id: Optional[str] = None
         self.log_states_dict: Dict[str, Any] = {}
-        # In-session cache for _fetch_resolution: keyed by condition_id.
-        self._resolution_cache: Dict[str, Optional[bool]] = {}
+
+        # Cache backends — both default to InMemoryCache; opt into Redis via
+        # cache_backend="redis" (+ redis_url) in config.
+        _cache_backend = self.config.get("cache_backend", "memory")
+        _redis_url = self.config.get("redis_url", "redis://localhost:6379/0")
+
+        # Session cache: short-lived, cleared at start of every propagate().
+        # Shared module-level; configure it once from the first graph instance.
+        configure_session_cache(
+            make_cache(_cache_backend, url=_redis_url, namespace="pta:session")
+        )
+        # Resolution cache: persistent across propagate() calls.
+        # Keyed by condition_id; only resolved (non-None) outcomes are stored.
+        self._resolution_cache = make_cache(
+            _cache_backend, url=_redis_url, namespace="pta:resolution"
+        )
 
         self.workflow = self.graph_setup.setup_graph(selected_analysts)
         self.graph = self.workflow.compile()
@@ -112,11 +127,12 @@ class PolyTradingAgentsGraph:
     def _fetch_resolution(self, condition_id: str) -> Optional[bool]:
         """Check if a market has resolved and return the outcome (True=YES, False=NO, None=unresolved).
 
-        Results cached in-session; only successful (non-None) fetches are stored
-        so unresolved markets are re-checked on the next call.
+        Only resolved outcomes (True/False) are cached; open markets (None) are
+        never cached so they are re-checked on every call until they close.
         """
-        if condition_id in self._resolution_cache:
-            return self._resolution_cache[condition_id]
+        cached = self._resolution_cache.get(condition_id)
+        if cached is not None:
+            return cached
         try:
             market = get_market(condition_id)
             if not market.get("closed", False):
@@ -125,7 +141,7 @@ class PolyTradingAgentsGraph:
             for token in tokens:
                 if token.get("winner", False):
                     outcome = token.get("outcome", "").upper() == "YES"
-                    self._resolution_cache[condition_id] = outcome
+                    self._resolution_cache.set(condition_id, outcome)
                     return outcome
             return None
         except Exception as e:

@@ -49,6 +49,18 @@ DEFAULT_CONFIG = {
     # Minimum edge required to take a position (skip if |estimated_prob - market_prob| < this)
     "min_edge": 0.03,
 
+    # ---------------------------------------------------------------------------
+    # Cache backend
+    # ---------------------------------------------------------------------------
+    # "memory" — default, in-process dict, zero deps, cleared per propagate()
+    # "redis"  — persistent, shared across workers; requires `pip install redis`
+    "cache_backend": "memory",
+    "redis_url": "redis://localhost:6379/0",
+    # TTL (seconds) applied to session cache entries when using Redis.
+    # The in-memory backend ignores this.  300 s = 5 min keeps data fresh
+    # without hammering APIs on repeated market scans.
+    "session_cache_ttl": 300,
+
     # Data vendor configuration
     "data_vendors": {
         "news_data": "yfinance",   # Fallback news source

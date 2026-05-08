@@ -7,6 +7,7 @@ import json
 
 from polytradingagents.agents.utils.memory import TradingMemoryLog, _ENTRY_SEP
 from polytradingagents.agents.schemas import PositionDecision, PortfolioDecision, PortfolioRating
+from polytradingagents.dataflows.cache import InMemoryCache
 from polytradingagents.graph.reflection import Reflector
 from polytradingagents.graph.trading_graph import PolyTradingAgentsGraph
 from polytradingagents.graph.propagation import Propagator
@@ -507,7 +508,7 @@ class TestDeferredReflection:
     def test_fetch_resolution_open_market_returns_none(self):
         """Open markets return None (not yet resolved)."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._resolution_cache = {}
+        mock_graph._resolution_cache = InMemoryCache()
         with patch("polytradingagents.graph.trading_graph.get_market",
                    return_value={"closed": False, "tokens": []}):
             result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
@@ -516,7 +517,7 @@ class TestDeferredReflection:
     def test_fetch_resolution_yes_winner(self):
         """Closed market with YES winner → True."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._resolution_cache = {}
+        mock_graph._resolution_cache = InMemoryCache()
         market = {"closed": True, "tokens": [
             {"outcome": "YES", "winner": True},
             {"outcome": "NO", "winner": False},
@@ -528,7 +529,7 @@ class TestDeferredReflection:
     def test_fetch_resolution_no_winner(self):
         """Closed market with NO winner → False."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._resolution_cache = {}
+        mock_graph._resolution_cache = InMemoryCache()
         market = {"closed": True, "tokens": [
             {"outcome": "YES", "winner": False},
             {"outcome": "NO", "winner": True},
@@ -540,7 +541,7 @@ class TestDeferredReflection:
     def test_fetch_resolution_caches_result(self):
         """Second call returns cached result without re-fetching."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._resolution_cache = {}
+        mock_graph._resolution_cache = InMemoryCache()
         market = {"closed": True, "tokens": [{"outcome": "YES", "winner": True}]}
         with patch("polytradingagents.graph.trading_graph.get_market", return_value=market) as m:
             PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
@@ -550,7 +551,7 @@ class TestDeferredReflection:
     def test_fetch_resolution_api_error_returns_none(self):
         """API errors return None without crashing."""
         mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
-        mock_graph._resolution_cache = {}
+        mock_graph._resolution_cache = InMemoryCache()
         with patch("polytradingagents.graph.trading_graph.get_market",
                    side_effect=Exception("network error")):
             result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "bad-cid")
