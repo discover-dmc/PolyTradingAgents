@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polytradingagents.agents.managers.research_manager import create_research_manager
-from polytradingagents.agents.schemas import (
+from polyagents.agents.managers.research_manager import create_research_manager
+from polyagents.agents.schemas import (
     PortfolioRating,
     ResearchPlan,
     TraderAction,
@@ -20,7 +20,7 @@ from polytradingagents.agents.schemas import (
     render_research_plan,
     render_trader_proposal,
 )
-from polytradingagents.agents.trader.trader import create_trader
+from polyagents.agents.trader.trader import create_trader
 
 
 # ---------------------------------------------------------------------------

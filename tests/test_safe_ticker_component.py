@@ -5,7 +5,7 @@ import unittest
 
 import pytest
 
-from polytradingagents.dataflows.utils import safe_ticker_component
+from polyagents.dataflows.utils import safe_ticker_component
 
 
 @pytest.mark.unit

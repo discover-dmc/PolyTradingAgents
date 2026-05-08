@@ -9,7 +9,7 @@ import unittest.mock as mock
 
 import pytest
 
-from polytradingagents.dataflows.cache import (
+from polyagents.dataflows.cache import (
     CacheBackend,
     InMemoryCache,
     make_cache,

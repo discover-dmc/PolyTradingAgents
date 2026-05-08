@@ -4,7 +4,7 @@
 
 **Multi-agent LLM framework for Polymarket prediction market trading**
 
-Built on [LangGraph](https://github.com/langchain-ai/langgraph), PolyTradingAgents runs a parallel analyst debate and produces a structured YES/NO/SKIP decision with Kelly-sized position sizing — all without wasting tokens on illiquid markets.
+Built on [LangGraph](https://github.com/langchain-ai/langgraph), PolyAgents runs a parallel analyst debate and produces a structured YES/NO/SKIP decision with Kelly-sized position sizing — all without wasting tokens on illiquid markets.
 
 ---
 
@@ -74,9 +74,9 @@ class PositionDecision(BaseModel):
 ## Quickstart
 
 ```python
-from polytradingagents import PolyTradingAgentsGraph
+from polyagents import PolyAgentsGraph
 
-graph = PolyTradingAgentsGraph(
+graph = PolyAgentsGraph(
     selected_analysts=["news", "base_rate", "crowd_forecast", "data"],
 )
 
@@ -100,15 +100,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 GOOGLE_API_KEY=...
 
 # Optional: override defaults
-POLYTRADINGAGENTS_RESULTS_DIR=~/results
-POLYTRADINGAGENTS_CACHE_DIR=~/cache
+POLYAGENTS_RESULTS_DIR=~/results
+POLYAGENTS_CACHE_DIR=~/cache
 ```
 
 ---
 
 ## Configuration
 
-Key config options (passed to `PolyTradingAgentsGraph` or via `DEFAULT_CONFIG`):
+Key config options (passed to `PolyAgentsGraph` or via `DEFAULT_CONFIG`):
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -121,7 +121,7 @@ Key config options (passed to `PolyTradingAgentsGraph` or via `DEFAULT_CONFIG`):
 | `polymarket_min_depth_usd` | `200` | Min depth at touch USD |
 | `kelly_cap` | `0.25` | Maximum Kelly fraction |
 | `min_edge` | `0.03` | Minimum edge to recommend position |
-| `memory_log_path` | `~/.polytradingagents/memory.md` | Path for trade memory log |
+| `memory_log_path` | `~/.polyagents/memory.md` | Path for trade memory log |
 | `checkpoint_enabled` | `True` | LangGraph checkpoint resumption |
 
 ---
@@ -132,10 +132,10 @@ Run only the analysts you need:
 
 ```python
 # Lightweight: just news + base rates
-graph = PolyTradingAgentsGraph(selected_analysts=["news", "base_rate"])
+graph = PolyAgentsGraph(selected_analysts=["news", "base_rate"])
 
 # Full ensemble
-graph = PolyTradingAgentsGraph(
+graph = PolyAgentsGraph(
     selected_analysts=["news", "base_rate", "crowd_forecast", "data"]
 )
 ```
@@ -185,7 +185,7 @@ uv run pytest tests/ -m unit -q
 ## Repo structure
 
 ```
-polytradingagents/
+polyagents/
 ├── agents/
 │   ├── analysts/
 │   │   ├── trade_sniper.py       # Liquidity gate
@@ -202,7 +202,7 @@ polytradingagents/
 │   ├── polymarket.py             # Polymarket CLOB + Gamma API client
 │   └── interface.py              # Cached data fetchers
 ├── graph/
-│   ├── trading_graph.py          # PolyTradingAgentsGraph
+│   ├── trading_graph.py          # PolyAgentsGraph
 │   ├── setup.py                  # LangGraph wiring
 │   ├── signal_processing.py      # Deterministic YES/NO/SKIP extraction
 │   └── conditional_logic.py      # Liquidity router

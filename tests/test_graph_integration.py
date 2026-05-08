@@ -13,15 +13,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polytradingagents.agents.schemas import (
+from polyagents.agents.schemas import (
     PositionDecision,
     ResearchPlan,
     PortfolioRating,
     TraderAction,
     TraderProposal,
 )
-from polytradingagents.default_config import DEFAULT_CONFIG
-from polytradingagents.graph.trading_graph import PolyTradingAgentsGraph
+from polyagents.default_config import DEFAULT_CONFIG
+from polyagents.graph.trading_graph import PolyAgentsGraph
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +105,8 @@ def mock_graph(tmp_path):
     mock_client = MagicMock()
     mock_client.get_llm.return_value = llm
 
-    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
-        graph = PolyTradingAgentsGraph(selected_analysts=["news", "data"], config=config)
+    with patch("polyagents.graph.trading_graph.create_llm_client", return_value=mock_client):
+        graph = PolyAgentsGraph(selected_analysts=["news", "data"], config=config)
     return graph
 
 
@@ -114,7 +114,7 @@ def _propagate(graph, condition_id="mock-cid-001", trade_date="2026-01-10"):
     """Run propagate() with TradeSniper and resolution patched out."""
     graph._fetch_resolution = MagicMock(return_value=None)
     with patch(
-        "polytradingagents.agents.analysts.trade_sniper.get_liquidity_summary",
+        "polyagents.agents.analysts.trade_sniper.get_liquidity_summary",
         return_value=_LIQUID_SUMMARY,
     ):
         return graph.propagate(
@@ -186,15 +186,15 @@ def test_graph_wiring_all_analysts(tmp_path):
     mock_client = MagicMock()
     mock_client.get_llm.return_value = llm
 
-    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
-        graph = PolyTradingAgentsGraph(
+    with patch("polyagents.graph.trading_graph.create_llm_client", return_value=mock_client):
+        graph = PolyAgentsGraph(
             selected_analysts=["news", "base_rate", "crowd_forecast", "data"],
             config=config,
         )
 
     graph._fetch_resolution = MagicMock(return_value=None)
     with patch(
-        "polytradingagents.agents.analysts.trade_sniper.get_liquidity_summary",
+        "polyagents.agents.analysts.trade_sniper.get_liquidity_summary",
         return_value=_LIQUID_SUMMARY,
     ):
         final_state, signal = graph.propagate(
@@ -224,13 +224,13 @@ def test_trade_sniper_skip_path(tmp_path):
     mock_client = MagicMock()
     mock_client.get_llm.return_value = llm
 
-    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
-        graph = PolyTradingAgentsGraph(selected_analysts=["news"], config=config)
+    with patch("polyagents.graph.trading_graph.create_llm_client", return_value=mock_client):
+        graph = PolyAgentsGraph(selected_analysts=["news"], config=config)
 
     graph._fetch_resolution = MagicMock(return_value=None)
     illiquid = {**_LIQUID_SUMMARY, "liquid": False, "volume_24h": 10.0}
     with patch(
-        "polytradingagents.agents.analysts.trade_sniper.get_liquidity_summary",
+        "polyagents.agents.analysts.trade_sniper.get_liquidity_summary",
         return_value=illiquid,
     ):
         final_state, signal = graph.propagate(
@@ -250,6 +250,6 @@ def test_invalid_analyst_key_raises():
     mock_client = MagicMock()
     mock_client.get_llm.return_value = llm
 
-    with patch("polytradingagents.graph.trading_graph.create_llm_client", return_value=mock_client):
+    with patch("polyagents.graph.trading_graph.create_llm_client", return_value=mock_client):
         with pytest.raises(ValueError, match="Unknown analyst"):
-            PolyTradingAgentsGraph(selected_analysts=["markt"], config=config)
+            PolyAgentsGraph(selected_analysts=["markt"], config=config)

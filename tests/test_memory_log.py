@@ -5,13 +5,13 @@ from unittest.mock import MagicMock, patch
 
 import json
 
-from polytradingagents.agents.utils.memory import TradingMemoryLog, _ENTRY_SEP
-from polytradingagents.agents.schemas import PositionDecision, PortfolioDecision, PortfolioRating
-from polytradingagents.dataflows.cache import InMemoryCache
-from polytradingagents.graph.reflection import Reflector
-from polytradingagents.graph.trading_graph import PolyTradingAgentsGraph
-from polytradingagents.graph.propagation import Propagator
-from polytradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+from polyagents.agents.utils.memory import TradingMemoryLog, _ENTRY_SEP
+from polyagents.agents.schemas import PositionDecision, PortfolioDecision, PortfolioRating
+from polyagents.dataflows.cache import InMemoryCache
+from polyagents.graph.reflection import Reflector
+from polyagents.graph.trading_graph import PolyAgentsGraph
+from polyagents.graph.propagation import Propagator
+from polyagents.agents.managers.portfolio_manager import create_portfolio_manager
 
 _SEP = _ENTRY_SEP
 
@@ -503,61 +503,61 @@ class TestDeferredReflection:
         assert "-5.0%" in human_content
         assert "Exit position immediately." in human_content
 
-    # PolyTradingAgentsGraph._fetch_resolution
+    # PolyAgentsGraph._fetch_resolution
 
     def test_fetch_resolution_open_market_returns_none(self):
         """Open markets return None (not yet resolved)."""
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph._resolution_cache = InMemoryCache()
-        with patch("polytradingagents.graph.trading_graph.get_market",
+        with patch("polyagents.graph.trading_graph.get_market",
                    return_value={"closed": False, "tokens": []}):
-            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+            result = PolyAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
         assert result is None
 
     def test_fetch_resolution_yes_winner(self):
         """Closed market with YES winner → True."""
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph._resolution_cache = InMemoryCache()
         market = {"closed": True, "tokens": [
             {"outcome": "YES", "winner": True},
             {"outcome": "NO", "winner": False},
         ]}
-        with patch("polytradingagents.graph.trading_graph.get_market", return_value=market):
-            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+        with patch("polyagents.graph.trading_graph.get_market", return_value=market):
+            result = PolyAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
         assert result is True
 
     def test_fetch_resolution_no_winner(self):
         """Closed market with NO winner → False."""
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph._resolution_cache = InMemoryCache()
         market = {"closed": True, "tokens": [
             {"outcome": "YES", "winner": False},
             {"outcome": "NO", "winner": True},
         ]}
-        with patch("polytradingagents.graph.trading_graph.get_market", return_value=market):
-            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+        with patch("polyagents.graph.trading_graph.get_market", return_value=market):
+            result = PolyAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
         assert result is False
 
     def test_fetch_resolution_caches_result(self):
         """Second call returns cached result without re-fetching."""
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph._resolution_cache = InMemoryCache()
         market = {"closed": True, "tokens": [{"outcome": "YES", "winner": True}]}
-        with patch("polytradingagents.graph.trading_graph.get_market", return_value=market) as m:
-            PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
-            PolyTradingAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+        with patch("polyagents.graph.trading_graph.get_market", return_value=market) as m:
+            PolyAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
+            PolyAgentsGraph._fetch_resolution(mock_graph, "mock-cid")
         assert m.call_count == 1  # only fetched once
 
     def test_fetch_resolution_api_error_returns_none(self):
         """API errors return None without crashing."""
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph._resolution_cache = InMemoryCache()
-        with patch("polytradingagents.graph.trading_graph.get_market",
+        with patch("polyagents.graph.trading_graph.get_market",
                    side_effect=Exception("network error")):
-            result = PolyTradingAgentsGraph._fetch_resolution(mock_graph, "bad-cid")
+            result = PolyAgentsGraph._fetch_resolution(mock_graph, "bad-cid")
         assert result is None
 
-    # PolyTradingAgentsGraph._resolve_pending_entries
+    # PolyAgentsGraph._resolve_pending_entries
 
     def test_resolve_resolves_all_tickers(self, tmp_path):
         """_resolve_pending_entries() resolves ALL pending entries regardless of market id."""
@@ -566,11 +566,11 @@ class TestDeferredReflection:
         log.store_decision("market-cid-2", "2026-01-11", DECISION_SELL)
         mock_reflector = MagicMock()
         mock_reflector.reflect_on_final_decision.return_value = "Auto-resolved."
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph.memory_log = log
         mock_graph.reflector = mock_reflector
         mock_graph._fetch_resolution = MagicMock(return_value=True)
-        PolyTradingAgentsGraph._resolve_pending_entries(mock_graph)
+        PolyAgentsGraph._resolve_pending_entries(mock_graph)
         assert mock_graph._fetch_resolution.call_count == 2
         assert log.get_pending_entries() == []
 
@@ -580,11 +580,11 @@ class TestDeferredReflection:
         log.store_decision("market-cid-1", "2026-01-05", DECISION_BUY)
         mock_reflector = MagicMock()
         mock_reflector.reflect_on_final_decision.return_value = "Correct call."
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph.memory_log = log
         mock_graph.reflector = mock_reflector
         mock_graph._fetch_resolution = MagicMock(return_value=True)
-        PolyTradingAgentsGraph._resolve_pending_entries(mock_graph)
+        PolyAgentsGraph._resolve_pending_entries(mock_graph)
         assert log.get_pending_entries() == []
         entries = log.load_entries()
         assert len(entries) == 1
@@ -596,11 +596,11 @@ class TestDeferredReflection:
         """Pending entries whose markets haven't closed stay pending."""
         log = make_log(tmp_path)
         log.store_decision("market-still-open", "2026-01-10", DECISION_BUY)
-        mock_graph = MagicMock(spec=PolyTradingAgentsGraph)
+        mock_graph = MagicMock(spec=PolyAgentsGraph)
         mock_graph.memory_log = log
         mock_graph.reflector = MagicMock()
         mock_graph._fetch_resolution = MagicMock(return_value=None)
-        PolyTradingAgentsGraph._resolve_pending_entries(mock_graph)
+        PolyAgentsGraph._resolve_pending_entries(mock_graph)
         assert len(log.get_pending_entries()) == 1  # still pending
 
 
@@ -746,17 +746,17 @@ class TestLegacyRemoval:
 
     def test_financial_situation_memory_removed(self):
         """FinancialSituationMemory must not be importable from the memory module."""
-        import polytradingagents.agents.utils.memory as m
+        import polyagents.agents.utils.memory as m
         assert not hasattr(m, "FinancialSituationMemory")
 
     def test_bm25_not_imported(self):
         """rank_bm25 must not be present in the memory module namespace."""
-        import polytradingagents.agents.utils.memory as m
+        import polyagents.agents.utils.memory as m
         assert not hasattr(m, "BM25Okapi")
 
     def test_fetch_returns_removed(self):
-        """PolyTradingAgentsGraph must not expose _fetch_returns (replaced by _fetch_resolution)."""
-        assert not hasattr(PolyTradingAgentsGraph, "_fetch_returns")
+        """PolyAgentsGraph must not expose _fetch_returns (replaced by _fetch_resolution)."""
+        assert not hasattr(PolyAgentsGraph, "_fetch_returns")
 
     def test_portfolio_manager_no_memory_param(self):
         """create_portfolio_manager accepts only llm; passing memory= raises TypeError."""
@@ -800,9 +800,9 @@ class TestLegacyRemoval:
         mock_graph.propagator.get_graph_args.return_value = {}
         mock_graph.signal_processor.process_signal.return_value = "YES"
         mock_graph._run_graph = functools.partial(
-            PolyTradingAgentsGraph._run_graph, mock_graph
+            PolyAgentsGraph._run_graph, mock_graph
         )
-        PolyTradingAgentsGraph.propagate(
+        PolyAgentsGraph.propagate(
             mock_graph, condition_id="mock-cid-001", trade_date="2026-01-10",
             market_question="Will X happen?"
         )

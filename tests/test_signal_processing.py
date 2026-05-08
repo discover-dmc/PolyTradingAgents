@@ -6,7 +6,7 @@ with a ``**Direction**: YES/NO/SKIP`` line. Extraction is deterministic.
 import pytest
 from unittest.mock import MagicMock
 
-from polytradingagents.graph.signal_processing import SignalProcessor, parse_direction
+from polyagents.graph.signal_processing import SignalProcessor, parse_direction
 
 
 @pytest.mark.unit
@@ -25,7 +25,7 @@ class TestParseDirection:
         assert parse_direction(text) == "YES"
 
     def test_rendered_position_decision_shape(self):
-        from polytradingagents.agents.schemas import PositionDecision, render_position_decision
+        from polyagents.agents.schemas import PositionDecision, render_position_decision
         dec = PositionDecision(
             direction="NO",
             estimated_probability=0.35,

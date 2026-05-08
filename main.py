@@ -1,5 +1,5 @@
-from polytradingagents.graph.trading_graph import PolyTradingAgentsGraph
-from polytradingagents.default_config import DEFAULT_CONFIG
+from polyagents.graph.trading_graph import PolyAgentsGraph
+from polyagents.default_config import DEFAULT_CONFIG
 
 from dotenv import load_dotenv
 
@@ -21,7 +21,7 @@ config["data_vendors"] = {
 }
 
 # Initialize with custom config
-ta = PolyTradingAgentsGraph(debug=True, config=config)
+ta = PolyAgentsGraph(debug=True, config=config)
 
 # forward propagate
 _, decision = ta.propagate("NVDA", "2024-05-10")

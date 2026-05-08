@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, Dict
 from rich.console import Console
 
 from cli.models import AnalystType
-from polytradingagents.llm_clients.model_catalog import get_model_options
+from polyagents.llm_clients.model_catalog import get_model_options
 
 console = Console()
 
